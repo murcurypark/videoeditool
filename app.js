@@ -15,6 +15,7 @@
   let exporting = false;
   let cancelExport = false;
   let onEnd = null;
+  const pending = [];     // files being loaded / failed to load, shown in the cut list
   let prepped = -1;       // index of the cut whose video was pre-seeked
 
   const fmt = (t) => {
@@ -62,25 +63,32 @@
   // ---------- loading ----------
   const VIDEO_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mts|m2ts|ts|3gp|ogv|mpg|mpeg)$/i;
   async function addFiles(files) {
-    const problems = [];
     for (const f of files) {
       if (!f) continue;
-      if (!f.type.startsWith('video/') && !VIDEO_EXT.test(f.name)) { problems.push(f.name + ': 영상 파일이 아닙니다.'); continue; }
-      try { await addFile(f); } catch (e) { problems.push(f.name + ': ' + e.message); }
+      const p = { name: f.name, state: 'loading', msg: '' };
+      pending.push(p); renderList();
+      if (!f.type.startsWith('video/') && !VIDEO_EXT.test(f.name)) { p.state = 'error'; p.msg = '영상 파일이 아닙니다.'; renderList(); continue; }
+      try { await addFile(f); pending.splice(pending.indexOf(p), 1); }
+      catch (e) { p.state = 'error'; p.msg = e.message; }
+      renderList();
     }
-    if (problems.length) alert('추가하지 못한 파일이 있습니다.\n\n' + problems.join('\n'));
   }
 
   async function addFile(file) {
     const el = document.createElement('video');
     el.playsInline = true; el.preload = 'auto';
     el.src = URL.createObjectURL(file);
-    await new Promise((res, rej) => { el.onloadedmetadata = res; el.onerror = () => rej(new Error('이 브라우저에서 재생할 수 없는 영상 형식입니다.')); });
+    stage.appendChild(el);
+    const fail = (msg) => { el.remove(); URL.revokeObjectURL(el.src); throw new Error(msg); };
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error('영상 정보를 읽지 못했습니다 (시간 초과). 브라우저가 지원하지 않는 코덱일 수 있습니다.')), 20000);
+      el.onloadedmetadata = () => { clearTimeout(t); res(); };
+      el.onerror = () => { clearTimeout(t); rej(new Error('이 브라우저에서 재생할 수 없는 영상 형식입니다.')); };
+    }).catch((e) => fail(e.message));
     el.onloadedmetadata = el.onerror = null;
-    if (!el.videoWidth) { URL.revokeObjectURL(el.src); throw new Error('영상 화면을 재생할 수 없는 코덱입니다 (예: HEVC/H.265). H.264 MP4로 변환 후 사용하세요.'); }
+    if (!el.videoWidth) fail('영상 화면을 재생할 수 없는 코덱입니다 (예: HEVC/H.265). H.264 MP4로 변환 후 사용하세요.');
     const src = { id: nextId++, name: file.name, file, url: el.src, duration: el.duration, el, thumbs: [], w: el.videoWidth, h: el.videoHeight, hue: (sources.length * 47 + 215) % 360, audio: undefined };
     sources.push(src);
-    stage.appendChild(el);
     el.addEventListener('play', () => { if (el === v) $('play').textContent = '⏸ 일시정지'; });
     el.addEventListener('pause', () => { if (el === v) $('play').textContent = '▶ 재생'; });
     el.addEventListener('click', () => loaded() && !exporting && (v.paused ? play() : pause()));
@@ -207,6 +215,22 @@
       li.ondblclick = (e) => { if (!e.target.dataset.a) { setMode('cut'); play(); } };
       ol.appendChild(li);
     });
+    for (const p of pending) {
+      const li = document.createElement('li');
+      li.className = 'pending' + (p.state === 'error' ? ' err' : '');
+      li.innerHTML = '<span class="d"><em></em><small></small></span>' + (p.state === 'error' ? '<button title="닫기">✕</button>' : '');
+      li.querySelector('em').textContent = p.name;
+      li.querySelector('small').textContent = p.state === 'error' ? p.msg : '불러오는 중…';
+      const x = li.querySelector('button');
+      if (x) x.onclick = () => { pending.splice(pending.indexOf(p), 1); renderList(); };
+      ol.appendChild(li);
+    }
+    if (!segs.length && !pending.length) {
+      const li = document.createElement('li');
+      li.className = 'placeholder';
+      li.textContent = '영상을 추가하면 여기에 컷이 표시됩니다.';
+      ol.appendChild(li);
+    }
   }
 
   function movePlayhead() {
@@ -586,5 +610,6 @@
   // test hook
   window.__editor = { get segs() { return segs; }, get playIdx() { return playIdx; }, split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles };
 
+  renderList();
   requestAnimationFrame(tick);
 })();

@@ -64,3 +64,8 @@ video.active { visibility: visible; }
   main { flex-direction: column; }
   .cuts { width: auto; max-height: 120px; }
 }
+
+.cuts li.pending, .cuts li.placeholder { cursor: default; color: var(--mute); }
+.cuts li.pending .d small { display: block; white-space: normal; }
+.cuts li.pending.err { border-color: #7a2d3a; color: #ff8fa0; }
+.cuts li.pending.err em { color: #ff8fa0; }
