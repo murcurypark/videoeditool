@@ -86,6 +86,8 @@
   // ---------- loading videos ----------
   const VIDEO_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mts|m2ts|ts|3gp|ogv|mpg|mpeg)$/i;
   async function addFiles(files) {
+    if (!loaded() && !$('restoreBar').hidden && files.length && !confirm('저장된 이전 작업이 있습니다.\n새 작업을 시작하면 이전 작업이 덮어써집니다. 계속할까요?')) return;
+    if (!loaded()) $('restoreBar').hidden = true;
     for (const f of files) {
       if (!f) continue;
       const p = { name: f.name, state: 'loading', msg: '' };
@@ -97,11 +99,30 @@
     }
   }
 
-  async function addFile(file) {
+  function makeVideoEl() {
     const el = document.createElement('video');
     el.playsInline = true; el.preload = 'auto';
-    el.src = URL.createObjectURL(file);
     stage.appendChild(el);
+    el.addEventListener('play', () => { if (el === v) $('play').textContent = '⏸ 일시정지'; });
+    el.addEventListener('pause', () => { if (el === v) $('play').textContent = '▶ 재생'; });
+    return el;
+  }
+
+  function enableUI() {
+    $('empty').hidden = true;
+    for (const id of ['play', 'modeAll', 'modeCut', 'split', 'del', 'export', 'addText', 'saveProj']) $(id).disabled = false;
+    $('undo').disabled = !history.length;
+  }
+
+  async function addFile(file) {
+    // a saved project may be waiting for its original files: match by name + size, else offer to relink
+    let target = sources.find((s) => s.missing && s.name === file.name && s.size === file.size);
+    if (!target) {
+      const m = sources.find((s) => s.missing);
+      if (m && confirm(`'${file.name}'은(는) 저장된 영상과 이름/크기가 다릅니다.\n누락된 '${m.name}' 대신 연결할까요?\n(취소하면 새 영상으로 추가합니다)`)) target = m;
+    }
+    const el = makeVideoEl();
+    el.src = URL.createObjectURL(file);
     const fail = (msg) => { el.remove(); URL.revokeObjectURL(el.src); throw new Error(msg); };
     await new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error('영상 정보를 읽지 못했습니다 (시간 초과). 브라우저가 지원하지 않는 코덱일 수 있습니다.')), 20000);
@@ -110,10 +131,19 @@
     }).catch((e) => fail(e.message));
     el.onloadedmetadata = el.onerror = null;
     if (!el.videoWidth) fail('영상 화면을 재생할 수 없는 코덱입니다 (예: HEVC/H.265). H.264 MP4로 변환 후 사용하세요.');
-    const src = { id: nextId++, name: file.name, file, url: el.src, duration: el.duration, el, thumbs: [], w: el.videoWidth, h: el.videoHeight, hue: (sources.length * 47 + 215) % 360, audio: undefined };
+
+    if (target) {   // relink a saved source to this file
+      const oldEl = target.el, wasActive = v === oldEl;
+      oldEl.remove();
+      Object.assign(target, { el, file, url: el.src, size: file.size, lastModified: file.lastModified, duration: el.duration, w: el.videoWidth, h: el.videoHeight, thumbs: [], audio: undefined, missing: false });
+      for (const sg of segs) if (sg.src === target.id) { sg.end = Math.min(sg.end, target.duration); sg.start = Math.min(sg.start, sg.end - MIN_LEN); }
+      if (wasActive) { activate(target); el.currentTime = segs[playIdx] ? segs[playIdx].start : 0; }
+      setupCanvas(); fitZoom(); render(); makeThumbs(target);
+      return;
+    }
+
+    const src = { id: nextId++, name: file.name, file, size: file.size, lastModified: file.lastModified, url: el.src, duration: el.duration, el, thumbs: [], w: el.videoWidth, h: el.videoHeight, hue: (sources.length * 47 + 215) % 360, audio: undefined, missing: false };
     sources.push(src);
-    el.addEventListener('play', () => { if (el === v) $('play').textContent = '⏸ 일시정지'; });
-    el.addEventListener('pause', () => { if (el === v) $('play').textContent = '▶ 재생'; });
 
     const first = !loaded();
     snapshot();
@@ -123,9 +153,7 @@
       sel = 0; playIdx = 0;
       activate(src);
       setupCanvas();
-      $('empty').hidden = true;
-      for (const id of ['play', 'modeAll', 'modeCut', 'split', 'del', 'export', 'addText']) $(id).disabled = false;
-      $('undo').disabled = true;
+      enableUI();
     } else {
       sel = segs.length - 1;
     }
@@ -135,6 +163,7 @@
   }
 
   async function makeThumbs(src) {
+    if (src.missing || !src.url) return;
     const tv = document.createElement('video');
     tv.muted = true; tv.preload = 'auto'; tv.src = src.url;
     await new Promise((r) => { tv.onloadeddata = r; tv.onerror = r; });
@@ -195,10 +224,19 @@
       el.src = URL.createObjectURL(f);
       try { await el.decode(); } catch (e) { alert(f.name + ': 이미지를 불러올 수 없습니다.'); continue; }
       const imgId = nextId++;
-      imgs.set(imgId, { el, w: el.naturalWidth || 400, h: el.naturalHeight || 400, name: f.name });
+      imgs.set(imgId, { el, w: el.naturalWidth || 400, h: el.naturalHeight || 400, name: f.name, dataUrl: await imageDataUrl(f, el) });
       const [start, end] = newOverlayRange();
       addOverlay({ id: nextId++, type: 'image', imgId, start, end, x: 0.5, y: 0.5, rot: 0, opacity: 1, w: 0.4 });
     }
+  }
+
+  // small data URL copy of an image so it can be saved with the project (big photos are downscaled)
+  function imageDataUrl(f, el) {
+    if (f.size <= 1.5e6) return new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(''); r.readAsDataURL(f); });
+    const k = Math.min(1, 1920 / Math.max(el.naturalWidth, el.naturalHeight)), c = document.createElement('canvas');
+    c.width = Math.round(el.naturalWidth * k); c.height = Math.round(el.naturalHeight * k);
+    c.getContext('2d').drawImage(el, 0, 0, c.width, c.height);
+    return Promise.resolve(c.toDataURL(f.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.92));
   }
 
   function removeOverlay(id) {
@@ -310,8 +348,16 @@
 
   function drawPreview() {
     if (!loaded()) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, view.width, view.height); return; }
+    if (!v) return;
     const src = srcOf(segs[playIdx]);
-    drawScene(vctx, view.width, view.height, editTime(), src.el, src.w, src.h, !exporting, segs[playIdx]);
+    drawScene(vctx, view.width, view.height, editTime(), src.missing ? null : src.el, src.w, src.h, !exporting, segs[playIdx]);
+    if (src.missing) {
+      vctx.save(); vctx.fillStyle = 'rgba(255,255,255,.85)'; vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
+      vctx.font = `700 ${view.width * 0.04}px ${FONT}`;
+      vctx.fillText('원본 영상을 다시 연결하세요', view.width / 2, view.height * 0.4);
+      vctx.font = `400 ${view.width * 0.03}px ${FONT}`; vctx.fillText(src.name, view.width / 2, view.height * 0.4 + view.width * 0.06);
+      vctx.restore();
+    }
     if (!exporting && (guides.x || guides.y)) drawGuides(vctx, view.width, view.height);
   }
 
@@ -499,6 +545,15 @@
   function renderList() {
     const ol = $('cutList');
     ol.innerHTML = '';
+    const miss = sources.filter((s) => s.missing);
+    if (miss.length) {
+      const li = document.createElement('li');
+      li.className = 'pending err relink';
+      li.innerHTML = '<span class="d"><em>원본 영상을 다시 연결하세요</em><small></small></span><button title="파일 선택">파일 선택</button>';
+      li.querySelector('small').textContent = miss.map((m) => m.name).join(', ') + ' — 같은 파일을 선택하면 자동으로 연결됩니다.';
+      li.querySelector('button').onclick = () => $('file').click();
+      ol.appendChild(li);
+    }
     segs.forEach((seg, i) => {
       const src = srcOf(seg);
       const li = document.createElement('li');
@@ -509,7 +564,7 @@
         '<button data-a="del" title="삭제"' + (segs.length <= 1 ? ' disabled' : '') + '>✕</button>';
       li.querySelector('.n').textContent = i + 1;
       const em = li.querySelector('em');
-      em.textContent = src.name; em.style.color = `hsl(${src.hue} 70% 70%)`;
+      em.textContent = (src.missing ? '⚠ ' : '') + src.name; em.style.color = `hsl(${src.hue} 70% 70%)`;
       li.onclick = (e) => {
         const a = e.target.dataset && e.target.dataset.a;
         if (exporting) return;
@@ -710,6 +765,7 @@
 
   function play() {
     if (!loaded()) return;
+    if (srcOf(segs[playIdx]).missing) { alert('원본 영상을 다시 연결해야 재생할 수 있습니다.\n컷 목록의 [파일 선택]으로 영상을 다시 선택하세요.'); return; }
     const s = segs[playIdx];
     if (v.currentTime < s.start - 0.05 || v.currentTime >= s.end - 0.03) v.currentTime = s.start;
     v.play();
@@ -1008,6 +1064,8 @@
   }
 
   async function exportVideo() {
+    const miss = sources.filter((s) => s.missing);
+    if (miss.length) { alert('원본 영상을 다시 연결해야 내보낼 수 있습니다:\n' + miss.map((m) => '· ' + m.name).join('\n')); return; }
     if (!window.VideoEncoder || !window.VideoFrame) return exportRealtime();
     exporting = true; cancelExport = false;
     $('exportOverlay').hidden = false;
@@ -1023,6 +1081,96 @@
     goto(0, segs[0].start);
     if (fallback) { alert('이 브라우저에서는 고속 내보내기를 쓸 수 없습니다. 실시간 녹화 방식을 시도합니다.'); return exportRealtime(); }
     if (blob) download(blob, 'mp4');
+  }
+
+  // ---------- project save / restore (edit decisions only; videos are re-linked by name + size) ----------
+  const DB = 'videoeditool-db', ST = 'kv';
+  const idb = () => new Promise((res, rej) => { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => r.result.createObjectStore(ST); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const kv = async (mode, fn) => { const db = await idb(); return new Promise((res, rej) => { const q = fn(db.transaction(ST, mode).objectStore(ST)); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
+  const kvGet = (k) => kv('readonly', (s) => s.get(k));
+  const kvSet = (k, val) => kv('readwrite', (s) => s.put(val, k));
+  const kvDel = (k) => kv('readwrite', (s) => s.delete(k));
+
+  function serialize() {
+    return {
+      v: 1, ratioKey, fitMode, nextId, segs, overlays,
+      sources: sources.map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
+      imgs: [...imgs].map(([id, im]) => ({ id, name: im.name, dataUrl: im.dataUrl })),
+    };
+  }
+
+  function resetProject() {
+    for (const s of sources) { s.el.remove(); if (s.url) URL.revokeObjectURL(s.url); }
+    sources.length = 0; imgs.clear();
+    segs = []; overlays = []; selOv = null; v = null; sel = 0; playIdx = 0; history = []; pending.length = 0; cutViewIdx = -1;
+    $('undo').disabled = true;
+  }
+
+  async function applyProject(p) {
+    if (!p || p.v !== 1 || !Array.isArray(p.segs) || !Array.isArray(p.sources) || !p.segs.length) throw new Error('프로젝트 파일 형식이 올바르지 않습니다.');
+    resetProject();
+    ratioKey = RATIOS[p.ratioKey] || p.ratioKey === 'orig' ? p.ratioKey : 'orig';
+    fitMode = p.fitMode === 'cover' ? 'cover' : 'contain';
+    $('ratio').value = ratioKey; $('fit').value = fitMode;
+    for (const s of p.sources) sources.push({ ...s, file: null, url: null, el: makeVideoEl(), thumbs: [], audio: undefined, missing: true });
+    for (const im of p.imgs || []) {
+      const el = new Image(); el.src = im.dataUrl;
+      try { await el.decode(); imgs.set(im.id, { el, w: el.naturalWidth || 400, h: el.naturalHeight || 400, name: im.name, dataUrl: im.dataUrl }); } catch (e) { /* skip broken image */ }
+    }
+    segs = p.segs.filter((sg) => sources.some((x) => x.id === sg.src));
+    overlays = (p.overlays || []).filter((o) => o.type === 'text' || imgs.has(o.imgId));
+    nextId = Math.max(p.nextId || 1, ...segs.map((x) => x.id + 1), ...overlays.map((o) => o.id + 1), ...sources.map((x) => x.id + 1), ...[...imgs.keys()].map((k) => k + 1));
+    if (!segs.length) throw new Error('프로젝트에 컷이 없습니다.');
+    activate(srcOf(segs[0]));
+    tab = 'cuts';
+    setupCanvas(); enableUI(); fitZoom(); render(); renderEdit();
+  }
+
+  let lastSig = '', saveBusy = false;
+  const setSaveState = (t) => { $('saveState').textContent = t; };
+  async function autosave(force) {
+    if (!loaded() || exporting || saveBusy) return;
+    const body = JSON.stringify(serialize());
+    if (body === lastSig && !force) return;
+    saveBusy = true;
+    try { await kvSet('autosave', { savedAt: Date.now(), body }); lastSig = body; setSaveState('자동 저장됨 ' + new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })); }
+    catch (e) { setSaveState('자동 저장 불가 — [저장]으로 파일에 저장하세요'); }
+    saveBusy = false;
+  }
+  setInterval(autosave, 2000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) autosave(); });
+
+  function saveProjectFile() {
+    if (!loaded()) return;
+    const d = new Date(), z = (n) => String(n).padStart(2, '0');
+    const name = `project-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.json`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(serialize())], { type: 'application/json' }));
+    a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+  async function openProjectFile(f) {
+    if (!f) return;
+    if (loaded() && !confirm('현재 작업을 닫고 프로젝트 파일을 불러올까요?')) return;
+    try { await applyProject(JSON.parse(await f.text())); $('restoreBar').hidden = true; }
+    catch (e) { alert('프로젝트를 불러오지 못했습니다.\n' + e.message); }
+  }
+
+  async function checkAutosave() {
+    try {
+      const rec = await kvGet('autosave');
+      if (!rec) return;
+      const p = JSON.parse(rec.body);
+      if (!p.segs || !p.segs.length) return;
+      $('restoreInfo').textContent = `이전 작업이 있습니다 · ${new Date(rec.savedAt).toLocaleString('ko-KR')} · 컷 ${p.segs.length}개 · 영상 ${p.sources.length}개`;
+      $('restoreBar').hidden = false;
+      $('restoreGo').onclick = async () => {
+        try { await applyProject(p); $('restoreBar').hidden = true; lastSig = rec.body; }
+        catch (e) { alert('불러오지 못했습니다.\n' + e.message); }
+      };
+      $('restoreDel').onclick = async () => { if (!confirm('저장된 이전 작업을 삭제할까요?')) return; try { await kvDel('autosave'); } catch (e) {} $('restoreBar').hidden = true; };
+    } catch (e) { setSaveState('자동 저장을 사용할 수 없는 환경입니다'); }
   }
 
   // ---------- wiring ----------
@@ -1045,6 +1193,8 @@
   $('undo').onclick = undo;
   $('export').onclick = exportVideo;
   $('addText').onclick = () => addText();
+  $('saveProj').onclick = saveProjectFile;
+  $('projFile').onchange = (e) => { openProjectFile(e.target.files[0]); e.target.value = ''; };
   $('tabCuts').onclick = () => { tab = 'cuts'; renderTabs(); };
   $('tabEdit').onclick = () => { tab = 'edit'; renderTabs(); renderEdit(); };
   $('ratio').onchange = (e) => { ratioKey = e.target.value; setupCanvas(); };
@@ -1066,11 +1216,12 @@
 
   // test hook
   window.__editor = {
-    get segs() { return segs; }, get overlays() { return overlays; }, get playIdx() { return playIdx; }, get view() { return view; },
+    get segs() { return segs; }, get sources() { return sources; }, get overlays() { return overlays; }, get playIdx() { return playIdx; }, get view() { return view; },
     split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles, addImages, addText, undo,
     setRatio(k) { $('ratio').value = k; ratioKey = k; setupCanvas(); }, setFit(k) { $('fit').value = k; fitMode = k; },
   };
 
   renderList(); renderEdit(); renderTabs(); renderCutView();
+  checkAutosave();
   requestAnimationFrame(tick);
 })();

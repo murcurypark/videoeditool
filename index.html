@@ -31,8 +31,17 @@
       <option value="cover">꽉 채우기</option>
     </select>
   </label>
+  <span id="saveState" class="savestate"></span>
+  <button id="saveProj" class="btn" disabled title="프로젝트 파일(.json)로 저장">💾 저장</button>
+  <label class="btn" for="projFile" title="프로젝트 파일 열기">📂 열기</label>
+  <input id="projFile" type="file" accept=".json,application/json" hidden>
   <button id="export" class="btn primary" disabled>내보내기</button>
 </header>
+<div id="restoreBar" class="restore" hidden>
+  <span id="restoreInfo"></span>
+  <button id="restoreGo" class="btn primary">이어서 편집</button>
+  <button id="restoreDel" class="btn">삭제</button>
+</div>
 
 <main id="drop">
   <section class="preview">
