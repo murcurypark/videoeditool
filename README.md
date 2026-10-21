@@ -5,6 +5,8 @@
 ## 기능
 - 영상 여러 개 불러오기(버튼/드래그 앤 드롭) → 각각 컷으로 나눠 한 타임라인에 이어 붙이기 (해상도가 달라도 검은 여백으로 맞춤)
 - 타임라인: 분할(S), 컷 삭제(Del), 양끝 드래그 트림, 컷 순서 변경, 확대/축소, 실행취소(Ctrl+Z)
+- **텍스트**(Pretendard 글꼴, 스타일 프리셋·외곽선·배경·그림자·정렬·회전) / **이미지** 오버레이: 미리보기에서 끌어서 이동·모서리로 크기 조절, 타임라인에서 클립 이동/길이 조절
+- **출력 비율**: 원본 / 16:9 / 9:16(쇼츠) / 1:1 / 4:5, 화면은 여백 두기 또는 꽉 채우기
 - **통 프리뷰**(컷을 이어서 재생) / **컷 프리뷰**(선택한 컷만 반복 재생)
 - 내보내기: **WebCodecs**로 프레임 단위 인코딩 후 `edited.mp4` 저장 (실시간보다 빠름, 오디오 포함)
 
@@ -23,4 +25,6 @@
 - 브라우저가 코덱을 지원해야 재생됩니다(예: 일부 환경에서 아이폰 HEVC 불가).
 
 ## 서드파티
+`fonts/Pretendard-*.woff2` — [Pretendard](https://github.com/orioncactus/pretendard) (SIL OFL 1.1, `fonts/Pretendard-LICENSE.txt`)
+
 `vendor/mp4-muxer.mjs` — [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) 5.1.3 (MIT, `vendor/mp4-muxer.LICENSE`)

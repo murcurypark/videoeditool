@@ -10,14 +10,34 @@
 <header>
   <h1>간단 영상 편집기</h1>
   <div class="spacer"></div>
-  <label class="btn primary" for="file">영상 추가</label>
+  <label class="btn tool" for="file" title="영상 추가"><b>🎞</b><span>영상 추가</span></label>
   <input id="file" type="file" accept="video/*" multiple hidden>
-  <button id="export" class="btn" disabled>내보내기</button>
+  <button id="addText" class="btn tool" disabled title="텍스트 추가"><b>T</b><span>텍스트</span></button>
+  <label class="btn tool" id="addImageLbl" for="imgFile" title="이미지 추가"><b>🖼</b><span>이미지</span></label>
+  <input id="imgFile" type="file" accept="image/*" multiple hidden>
+  <div class="spacer"></div>
+  <label class="chk">비율
+    <select id="ratio">
+      <option value="orig">원본</option>
+      <option value="16:9">16:9 가로</option>
+      <option value="9:16">9:16 세로(쇼츠)</option>
+      <option value="1:1">1:1 정사각</option>
+      <option value="4:5">4:5 인스타</option>
+    </select>
+  </label>
+  <label class="chk">화면
+    <select id="fit">
+      <option value="contain">여백 두기</option>
+      <option value="cover">꽉 채우기</option>
+    </select>
+  </label>
+  <button id="export" class="btn primary" disabled>내보내기</button>
 </header>
 
 <main id="drop">
   <section class="preview">
     <div class="stage" id="stage">
+      <canvas id="view" width="1280" height="720"></canvas>
       <div id="empty" class="empty">영상을 여기로 끌어다 놓거나 [영상 추가]를 누르세요 (여러 개 가능)<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다</small></div>
       <div id="exportOverlay" class="overlay" hidden>
         <div>내보내는 중… <span id="exportPct">0%</span></div>
@@ -37,10 +57,16 @@
     </div>
   </section>
 
-  <aside class="cuts">
-    <h2>컷 목록</h2>
-    <ol id="cutList"></ol>
-    <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생<br>영상을 추가하면 타임라인 맨 뒤에 붙습니다. ↑↓로 순서를 바꾸세요.</p>
+  <aside class="side">
+    <div class="tabs">
+      <button id="tabCuts" class="on">컷 목록</button>
+      <button id="tabEdit">편집</button>
+    </div>
+    <div id="panelCuts" class="panel">
+      <ol id="cutList"></ol>
+      <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생<br>영상을 추가하면 타임라인 맨 뒤에 붙습니다. ↑↓로 순서를 바꾸세요.</p>
+    </div>
+    <div id="panelEdit" class="panel" hidden></div>
   </aside>
 </main>
 
@@ -53,11 +79,14 @@
     <label class="chk">확대 <input id="zoom" type="range" min="10" max="400" value="60"></label>
   </div>
   <div id="scroller" class="scroller">
-    <div id="ruler" class="ruler"></div>
-    <div id="track" class="track"></div>
-    <div id="playhead" class="playhead"></div>
+    <div id="inner" class="inner">
+      <div id="ruler" class="ruler"></div>
+      <div id="track" class="track"></div>
+      <div id="otrack" class="otrack"></div>
+      <div id="playhead" class="playhead"></div>
+    </div>
   </div>
-  <p class="hint">컷 양쪽 끝을 끌어 트림 · 빈 곳/눈금 클릭으로 이동 · Space 재생 · ←/→ 1프레임 · Shift+←/→ 1초</p>
+  <p class="hint">컷/클립 양쪽 끝을 끌어 길이 조절 · 클립을 끌어 이동 · 빈 곳/눈금 클릭으로 이동 · Space 재생 · ←/→ 1프레임 · Shift+←/→ 1초 · 미리보기에서 텍스트를 끌어 위치/크기 조절</p>
 </section>
 
 <script src="app.js"></script>
