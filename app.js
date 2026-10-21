@@ -60,12 +60,15 @@
   }
 
   // ---------- loading ----------
+  const VIDEO_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mts|m2ts|ts|3gp|ogv|mpg|mpeg)$/i;
   async function addFiles(files) {
+    const problems = [];
     for (const f of files) {
-      if (f && f.type.startsWith('video/')) {
-        try { await addFile(f); } catch (e) { alert(f.name + ': ' + e.message); }
-      }
+      if (!f) continue;
+      if (!f.type.startsWith('video/') && !VIDEO_EXT.test(f.name)) { problems.push(f.name + ': 영상 파일이 아닙니다.'); continue; }
+      try { await addFile(f); } catch (e) { problems.push(f.name + ': ' + e.message); }
     }
+    if (problems.length) alert('추가하지 못한 파일이 있습니다.\n\n' + problems.join('\n'));
   }
 
   async function addFile(file) {
@@ -74,6 +77,7 @@
     el.src = URL.createObjectURL(file);
     await new Promise((res, rej) => { el.onloadedmetadata = res; el.onerror = () => rej(new Error('이 브라우저에서 재생할 수 없는 영상 형식입니다.')); });
     el.onloadedmetadata = el.onerror = null;
+    if (!el.videoWidth) { URL.revokeObjectURL(el.src); throw new Error('영상 화면을 재생할 수 없는 코덱입니다 (예: HEVC/H.265). H.264 MP4로 변환 후 사용하세요.'); }
     const src = { id: nextId++, name: file.name, file, url: el.src, duration: el.duration, el, thumbs: [], w: el.videoWidth, h: el.videoHeight, hue: (sources.length * 47 + 215) % 360, audio: undefined };
     sources.push(src);
     stage.appendChild(el);
