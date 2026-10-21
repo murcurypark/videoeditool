@@ -276,12 +276,6 @@
     const k = view.width / (view.getBoundingClientRect().width || view.width);
     const B = boxOf(ctx, o, cw);
     ctx.save();
-    if (guides.x || guides.y) {
-      ctx.strokeStyle = '#ff4f6a'; ctx.lineWidth = 1.5 * k; ctx.beginPath();
-      if (guides.x) { ctx.moveTo(cw / 2, 0); ctx.lineTo(cw / 2, ch); }
-      if (guides.y) { ctx.moveTo(0, ch / 2); ctx.lineTo(cw, ch / 2); }
-      ctx.stroke();
-    }
     ctx.translate(o.x * cw, o.y * ch); ctx.rotate(o.rot * Math.PI / 180);
     ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 2 * k; ctx.strokeRect(-B.w / 2, -B.h / 2, B.w, B.h);
     ctx.fillStyle = '#fff'; ctx.strokeStyle = '#4f8cff';
@@ -289,13 +283,26 @@
     ctx.restore();
   }
 
+  function drawGuides(ctx, cw, ch) {
+    const k = view.width / (view.getBoundingClientRect().width || view.width);
+    ctx.save(); ctx.strokeStyle = '#ff4f6a'; ctx.lineWidth = 1.5 * k; ctx.beginPath();
+    if (guides.x) { ctx.moveTo(cw / 2, 0); ctx.lineTo(cw / 2, ch); }
+    if (guides.y) { ctx.moveTo(0, ch / 2); ctx.lineTo(cw, ch / 2); }
+    ctx.stroke(); ctx.restore();
+  }
+
   // draws one frame of the project: video (fit / cover) + overlays at timeline time t
-  function drawScene(ctx, cw, ch, t, el, srcW, srcH, ui) {
+  function drawScene(ctx, cw, ch, t, el, srcW, srcH, ui, seg) {
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
     if (el && srcW) {
-      const sc = fitMode === 'cover' ? Math.max(cw / srcW, ch / srcH) : Math.min(cw / srcW, ch / srcH);
+      const z = (seg && seg.zoom) || 1;
+      const sc = (fitMode === 'cover' ? Math.max(cw / srcW, ch / srcH) : Math.min(cw / srcW, ch / srcH)) * z;
       const dw = srcW * sc, dh = srcH * sc;
-      ctx.drawImage(el, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+      ctx.save();
+      ctx.translate(cw / 2 + ((seg && seg.px) || 0) * cw, ch / 2 + ((seg && seg.py) || 0) * ch);
+      if (seg && seg.flip) ctx.scale(-1, 1);
+      ctx.drawImage(el, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
     }
     for (const o of drawOrder(activeOverlays(t))) drawOverlay(ctx, o, cw, ch);
     if (ui && selOv) { const o = ovOf(selOv); if (o && t >= o.start && t < o.end) drawSelection(ctx, o, cw, ch); }
@@ -304,7 +311,8 @@
   function drawPreview() {
     if (!loaded()) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, view.width, view.height); return; }
     const src = srcOf(segs[playIdx]);
-    drawScene(vctx, view.width, view.height, editTime(), src.el, src.w, src.h, !exporting);
+    drawScene(vctx, view.width, view.height, editTime(), src.el, src.w, src.h, !exporting, segs[playIdx]);
+    if (!exporting && (guides.x || guides.y)) drawGuides(vctx, view.width, view.height);
   }
 
   // ---------- preview: direct manipulation ----------
@@ -337,12 +345,22 @@
       return startMove(e, hit, p);
     }
     if (selOv) { selOv = null; render(); renderEdit(); }
+    startPan(e, segs[playIdx], p);
   });
+  view.addEventListener('wheel', (e) => {
+    if (!loaded() || exporting) return;
+    e.preventDefault();
+    const seg = segs[playIdx];
+    if (armedWheel) { snapshot(); armedWheel = false; }
+    clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { armedWheel = true; renderCutView(); }, 400);
+    seg.zoom = +clamp((seg.zoom || 1) * (e.deltaY < 0 ? 1.06 : 1 / 1.06), 0.2, 5).toFixed(3);
+  }, { passive: false });
+  let armedWheel = true, wheelTimer = 0;
   view.addEventListener('pointermove', (e) => {
     if (!loaded() || exporting || e.buttons) return;
     const p = toCanvas(e), vis = activeOverlays(editTime());
     const cur = selOv && vis.find((o) => o.id === selOv);
-    view.style.cursor = cur && hitHandle(cur, p) ? 'nwse-resize' : vis.some((o) => hitBody(o, p)) ? 'move' : 'default';
+    view.style.cursor = cur && hitHandle(cur, p) ? 'nwse-resize' : vis.some((o) => hitBody(o, p)) ? 'move' : 'grab';
   });
 
   function dragWindow(move, up) {
@@ -361,6 +379,20 @@
       if (guides.y) y = 0.5;
       o.x = x; o.y = y;
     });
+  }
+  function startPan(e, seg, p0) {
+    e.preventDefault();
+    snapshot();
+    const ox = seg.px || 0, oy = seg.py || 0;
+    view.style.cursor = 'grabbing';
+    dragWindow((ev) => {
+      const p = toCanvas(ev);
+      let x = clamp(ox + (p.x - p0.x) / view.width, -2, 2), y = clamp(oy + (p.y - p0.y) / view.height, -2, 2);
+      guides.x = Math.abs(x) < 0.01; guides.y = Math.abs(y) < 0.01;
+      if (guides.x) x = 0;
+      if (guides.y) y = 0;
+      seg.px = +x.toFixed(4); seg.py = +y.toFixed(4);
+    }, () => { view.style.cursor = 'default'; renderCutView(); });
   }
   function startScale(e, o, p0) {
     e.preventDefault();
@@ -385,6 +417,7 @@
     renderTimeline();
     renderList();
     renderTabs();
+    renderCutView();
     updateTime();
     $('del').disabled = segs.length <= 1 && !selOv;
   }
@@ -526,6 +559,38 @@
     return t;
   }
 
+  // ---------- cut screen panel (zoom / position / flip of the cut under the playhead) ----------
+  let cutViewIdx = -1;
+  function renderCutView() {
+    const box = $('cutView'), seg = segs[playIdx];
+    cutViewIdx = playIdx;
+    if (!seg) { box.innerHTML = ''; return; }
+    const row = (k, label, min, max, step, val, scale) =>
+      `<div class="f"><label>${label}</label><div class="row"><input type="range" data-cv="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div></div>`;
+    box.innerHTML = `<h3>컷 ${playIdx + 1} 화면 (크롭)</h3>` +
+      row('zoom', '확대', 20, 500, 1, Math.round((seg.zoom || 1) * 100), 0.01) +
+      row('px', '가로 위치', -100, 100, 1, Math.round((seg.px || 0) * 100), 0.01) +
+      row('py', '세로 위치', -100, 100, 1, Math.round((seg.py || 0) * 100), 0.01) +
+      `<div class="f"><label><input type="checkbox" data-cv="flip"> 좌우 반전</label></div>` +
+      `<div class="actions"><button class="btn" data-cvreset="1">화면 초기화</button></div>` +
+      `<p class="hint">미리보기에서 빈 곳을 끌면 이동, 마우스 휠로 확대/축소</p>`;
+    box.querySelector('[data-cv=flip]').checked = !!seg.flip;
+  }
+  $('cutView').addEventListener('input', (e) => {
+    const el = e.target, k = el.dataset.cv, seg = segs[playIdx];
+    if (!k || !seg) return;
+    if (armed) { snapshot(); armed = false; }
+    if (el.type === 'checkbox') seg[k] = el.checked;
+    else { seg[k] = +(parseFloat(el.value) * parseFloat(el.dataset.scale)).toFixed(4); el.parentElement.querySelector('output').textContent = el.value; }
+  });
+  $('cutView').addEventListener('change', () => { armed = true; });
+  $('cutView').addEventListener('click', (e) => {
+    if (!e.target.dataset.cvreset || !segs[playIdx]) return;
+    snapshot();
+    Object.assign(segs[playIdx], { zoom: 1, px: 0, py: 0, flip: false });
+    renderCutView();
+  });
+
   // ---------- edit panel (selected text / image) ----------
   let armed = true; // take one undo snapshot per slider/typing interaction
 
@@ -605,7 +670,7 @@
     const seg = segs[playIdx], s = v.currentTime;
     if (s - seg.start < MIN_LEN || seg.end - s < MIN_LEN) return;
     snapshot();
-    segs.splice(playIdx, 1, { id: nextId++, src: seg.src, start: seg.start, end: s }, { id: nextId++, src: seg.src, start: s, end: seg.end });
+    segs.splice(playIdx, 1, { ...seg, id: nextId++, start: seg.start, end: s }, { ...seg, id: nextId++, start: s, end: seg.end });
     sel = playIdx + 1; playIdx = sel;
     render();
   }
@@ -686,6 +751,7 @@
       if (x < scroller.scrollLeft || x > scroller.scrollLeft + scroller.clientWidth - 20) scroller.scrollLeft = Math.max(0, x - 40);
     }
     updateTime();
+    if (playIdx !== cutViewIdx) renderCutView();
     drawPreview();
     requestAnimationFrame(tick);
   }
@@ -917,7 +983,7 @@
         if (cancelExport) break outer;
         if (encErr) throw encErr;
         await seekTo(src.el, Math.min(segs[i].start + k / FPS, segs[i].end - 0.001));
-        drawScene(ctx, W, H, offs[i] + k / FPS, src.el, src.w, src.h, false);
+        drawScene(ctx, W, H, offs[i] + k / FPS, src.el, src.w, src.h, false, segs[i]);
         const frame = new VideoFrame(cv, { timestamp: Math.round(done * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
         venc.encode(frame, { keyFrame: done % 60 === 0 });
         frame.close();
@@ -1005,6 +1071,6 @@
     setRatio(k) { $('ratio').value = k; ratioKey = k; setupCanvas(); }, setFit(k) { $('fit').value = k; fitMode = k; },
   };
 
-  renderList(); renderEdit(); renderTabs();
+  renderList(); renderEdit(); renderTabs(); renderCutView();
   requestAnimationFrame(tick);
 })();

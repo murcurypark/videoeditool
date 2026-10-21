@@ -104,3 +104,6 @@ video { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events:
   main { flex-direction: column; }
   .side { width: auto; max-height: 220px; }
 }
+
+.cutview { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.cutview h3 { font-size: 13px; margin: 0 0 10px; color: var(--mute); font-weight: 600; }
