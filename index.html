@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>간단 영상 편집기</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>간단 영상 편집기</h1>
+  <div class="spacer"></div>
+  <label class="btn primary" for="file">영상 열기</label>
+  <input id="file" type="file" accept="video/*" hidden>
+  <button id="export" class="btn" disabled>내보내기</button>
+</header>
+
+<main id="drop">
+  <section class="preview">
+    <div class="stage">
+      <video id="video" playsinline></video>
+      <div id="empty" class="empty">영상을 여기로 끌어다 놓거나 [영상 열기]를 누르세요<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다</small></div>
+      <div id="exportOverlay" class="overlay" hidden>
+        <div>내보내는 중… <span id="exportPct">0%</span></div>
+        <div class="bar"><i id="exportBar"></i></div>
+        <small>실시간 속도로 녹화됩니다. 이 탭을 닫거나 숨기지 마세요.</small>
+        <button id="exportCancel" class="btn">취소</button>
+      </div>
+    </div>
+    <div class="controls">
+      <button id="play" class="btn" disabled>▶ 재생</button>
+      <div class="seg" role="group" aria-label="프리뷰 모드">
+        <button id="modeAll" class="btn on" disabled>통 프리뷰</button>
+        <button id="modeCut" class="btn" disabled>컷 프리뷰</button>
+      </div>
+      <label class="chk"><input id="loop" type="checkbox" checked> 컷 반복</label>
+      <span id="time" class="time">00:00.00 / 00:00.00</span>
+    </div>
+  </section>
+
+  <aside class="cuts">
+    <h2>컷 목록</h2>
+    <ol id="cutList"></ol>
+    <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생</p>
+  </aside>
+</main>
+
+<section class="timeline">
+  <div class="tools">
+    <button id="split" class="btn" disabled>✂ 분할 (S)</button>
+    <button id="del" class="btn" disabled>삭제 (Del)</button>
+    <button id="undo" class="btn" disabled>실행취소 (Ctrl+Z)</button>
+    <div class="spacer"></div>
+    <label class="chk">확대 <input id="zoom" type="range" min="10" max="400" value="60"></label>
+  </div>
+  <div id="scroller" class="scroller">
+    <div id="ruler" class="ruler"></div>
+    <div id="track" class="track"></div>
+    <div id="playhead" class="playhead"></div>
+  </div>
+  <p class="hint">컷 양쪽 끝을 끌어 트림 · 빈 곳/눈금 클릭으로 이동 · Space 재생 · ←/→ 1프레임 · Shift+←/→ 1초</p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
