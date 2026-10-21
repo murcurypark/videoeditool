@@ -22,9 +22,10 @@ main { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 12px; }
 main.dragover { outline: 2px dashed var(--accent); outline-offset: -6px; }
 .preview { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .stage { position: relative; flex: 1; min-height: 160px; background: #000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-video { max-width: 100%; max-height: 100%; }
+video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; visibility: hidden; }
+video.active { visibility: visible; }
 .empty { position: absolute; text-align: center; color: var(--mute); padding: 16px; }
-.overlay { position: absolute; inset: 0; background: rgba(0,0,0,.75); display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; text-align: center; padding: 16px; }
+.overlay { z-index: 10; position: absolute; inset: 0; background: rgba(0,0,0,.75); display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; text-align: center; padding: 16px; }
 .overlay[hidden] { display: none; }
 .bar { width: min(320px, 80%); height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
@@ -37,7 +38,8 @@ video { max-width: 100%; max-height: 100%; }
 .cuts li:hover { background: #262b33; }
 .cuts li.sel { border-color: var(--accent); background: #202a3d; }
 .cuts li .n { color: var(--mute); width: 18px; }
-.cuts li .d { flex: 1; font-variant-numeric: tabular-nums; font-size: 12px; }
+.cuts li .d em { display: block; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+.cuts li .d { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; font-size: 12px; }
 .cuts li button { background: none; border: 0; color: var(--mute); cursor: pointer; padding: 2px 4px; }
 .cuts li button:hover:not(:disabled) { color: var(--fg); }
 .cuts li button:disabled { opacity: .25; cursor: default; }
@@ -49,7 +51,7 @@ video { max-width: 100%; max-height: 100%; }
 .ruler { position: relative; height: 22px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .ruler span { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line); padding: 2px 0 0 3px; font-size: 10px; color: var(--mute); pointer-events: none; }
 .track { position: relative; height: 64px; margin-top: 6px; white-space: nowrap; }
-.block { position: absolute; top: 0; height: 60px; background: var(--cut); border: 2px solid transparent; border-radius: 6px; overflow: hidden; cursor: pointer; }
+.block { position: absolute; white-space: nowrap; top: 0; height: 60px; background: var(--cut); border: 2px solid transparent; border-radius: 6px; overflow: hidden; cursor: pointer; }
 .block.sel { border-color: #fff; background: var(--cut-sel); }
 .block canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; pointer-events: none; }
 .block b { position: absolute; left: 8px; top: 2px; font-size: 11px; text-shadow: 0 0 3px #000; pointer-events: none; }

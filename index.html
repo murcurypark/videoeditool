@@ -10,16 +10,15 @@
 <header>
   <h1>간단 영상 편집기</h1>
   <div class="spacer"></div>
-  <label class="btn primary" for="file">영상 열기</label>
-  <input id="file" type="file" accept="video/*" hidden>
+  <label class="btn primary" for="file">영상 추가</label>
+  <input id="file" type="file" accept="video/*" multiple hidden>
   <button id="export" class="btn" disabled>내보내기</button>
 </header>
 
 <main id="drop">
   <section class="preview">
-    <div class="stage">
-      <video id="video" playsinline></video>
-      <div id="empty" class="empty">영상을 여기로 끌어다 놓거나 [영상 열기]를 누르세요<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다</small></div>
+    <div class="stage" id="stage">
+      <div id="empty" class="empty">영상을 여기로 끌어다 놓거나 [영상 추가]를 누르세요 (여러 개 가능)<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다</small></div>
       <div id="exportOverlay" class="overlay" hidden>
         <div>내보내는 중… <span id="exportPct">0%</span></div>
         <div class="bar"><i id="exportBar"></i></div>
@@ -41,7 +40,7 @@
   <aside class="cuts">
     <h2>컷 목록</h2>
     <ol id="cutList"></ol>
-    <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생</p>
+    <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생<br>영상을 추가하면 타임라인 맨 뒤에 붙습니다. ↑↓로 순서를 바꾸세요.</p>
   </aside>
 </main>
 
