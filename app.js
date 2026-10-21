@@ -15,6 +15,8 @@
   let exporting = false;
   let onEnd = null;
   let objectUrl = null;
+  let currentFile = null;
+  let cancelExport = false;
 
   const fmt = (t) => {
     t = Math.max(0, t || 0);
@@ -46,6 +48,7 @@
     if (!file || !file.type.startsWith('video/')) return;
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     objectUrl = URL.createObjectURL(file);
+    currentFile = file;
     v.src = objectUrl;
     await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej(new Error('이 브라우저에서 재생할 수 없는 영상 형식입니다.')); })
       .catch((e) => { alert(e.message); throw e; });
@@ -317,12 +320,13 @@
       .find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   }
 
-  async function exportVideo() {
+  async function exportRealtime() {
     const mime = pickMime();
     const capture = v.captureStream || v.mozCaptureStream;
     if (!mime || !capture) { alert('이 브라우저는 내보내기를 지원하지 않습니다. 최신 Chrome/Edge/Firefox를 사용하세요.'); return; }
     exporting = true;
     $('exportOverlay').hidden = false;
+    $('exportOverlay').querySelector('small').textContent = '실시간 속도로 녹화됩니다. 이 탭을 닫거나 숨기지 마세요.';
     pause(); setMode('all'); playIdx = 0;
     v.currentTime = segs[0].start;
     await new Promise((r) => { if (!v.seeking) return r(); v.onseeked = r; });
@@ -352,6 +356,138 @@
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob(chunks, { type: mime }));
     a.download = 'edited.' + ext;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+
+  // ---------- export (WebCodecs: frame-by-frame encode, faster than real time) ----------
+  const FPS = 30;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function seekTo(t) {
+    if (Math.abs(v.currentTime - t) < 1e-4 && !v.seeking) return Promise.resolve();
+    return new Promise((res) => { v.addEventListener('seeked', res, { once: true }); v.currentTime = t; });
+  }
+
+  async function decodeAudio() {
+    if (!currentFile) return null;
+    try {
+      const ctx = new AudioContext({ sampleRate: 48000 });
+      const buf = await ctx.decodeAudioData(await currentFile.arrayBuffer());
+      ctx.close();
+      return buf;
+    } catch (e) { return null; }   // no audio track / undecodable: export video only
+  }
+
+  function setProgress(p) {
+    $('exportPct').textContent = Math.round(p * 100) + '%';
+    $('exportBar').style.width = p * 100 + '%';
+  }
+
+  async function exportWebCodecs() {
+    const W = v.videoWidth & ~1, H = v.videoHeight & ~1;
+    let vc = null;
+    for (const [codec, mux] of [['avc1.640033', 'avc'], ['vp09.00.50.08', 'vp9']]) {
+      const cfg = { codec, width: W, height: H, bitrate: clamp(W * H * FPS * 0.1, 2e6, 25e6), framerate: FPS };
+      if ((await VideoEncoder.isConfigSupported(cfg)).supported) { vc = { cfg, mux }; break; }
+    }
+    if (!vc) throw new Error('unsupported');
+    const { Muxer, ArrayBufferTarget } = await import('./vendor/mp4-muxer.mjs');
+
+    // audio: decode the source once, then slice out the kept ranges
+    const abuf = await decodeAudio();
+    let ac = null;
+    if (abuf) {
+      const ch = Math.min(2, abuf.numberOfChannels), sr = abuf.sampleRate;
+      for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+        const cfg = { codec, sampleRate: sr, numberOfChannels: ch, bitrate: 128000 };
+        if ((await AudioEncoder.isConfigSupported(cfg)).supported) { ac = { cfg, mux, ch, sr }; break; }
+      }
+    }
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target, fastStart: 'in-memory', firstTimestampBehavior: 'offset',
+      video: { codec: vc.mux, width: W, height: H },
+      ...(ac && { audio: { codec: ac.mux, numberOfChannels: ac.ch, sampleRate: ac.sr } }),
+    });
+    let encErr = null;
+    const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: (e) => { encErr = e; } });
+    venc.configure(vc.cfg);
+    let aenc = null;
+    if (ac) { aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: (e) => { encErr = e; } }); aenc.configure(ac.cfg); }
+
+    const frameCounts = segs.map((s) => Math.max(1, Math.round((s.end - s.start) * FPS)));
+    const totalFrames = frameCounts.reduce((a, b) => a + b, 0);
+    let done = 0;
+
+    // audio first (fast), then video
+    if (ac) {
+      const chans = Array.from({ length: ac.ch }, (_, c) => abuf.getChannelData(c));
+      const parts = segs.map((s) => {
+        const a = Math.floor(s.start * ac.sr), b = Math.min(chans[0].length, Math.floor(s.end * ac.sr));
+        return chans.map((d) => d.subarray(a, b));
+      });
+      const n = parts.reduce((a, p) => a + p[0].length, 0);
+      const flat = chans.map(() => new Float32Array(n));
+      let o = 0;
+      for (const p of parts) { p.forEach((d, c) => flat[c].set(d, o)); o += p[0].length; }
+      const CH = 4096;
+      for (let pos = 0; pos < n && !cancelExport; pos += CH) {
+        const len = Math.min(CH, n - pos);
+        const data = new Float32Array(len * ac.ch);
+        flat.forEach((d, c) => data.set(d.subarray(pos, pos + len), c * len));
+        const ad = new AudioData({ format: 'f32-planar', sampleRate: ac.sr, numberOfFrames: len, numberOfChannels: ac.ch, timestamp: Math.round(pos / ac.sr * 1e6), data });
+        aenc.encode(ad); ad.close();
+        if (aenc.encodeQueueSize > 16) await sleep(0);
+        if (encErr) throw encErr;
+      }
+    }
+
+    outer:
+    for (let i = 0; i < segs.length; i++) {
+      for (let k = 0; k < frameCounts[i]; k++) {
+        if (cancelExport) break outer;
+        if (encErr) throw encErr;
+        await seekTo(Math.min(segs[i].start + k / FPS, segs[i].end - 0.001));
+        const frame = new VideoFrame(v, { timestamp: Math.round(done * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+        venc.encode(frame, { keyFrame: done % 60 === 0 });
+        frame.close();
+        done++;
+        while (venc.encodeQueueSize > 8) await sleep(2);
+        if (done % 5 === 0) { setProgress(done / totalFrames); await sleep(0); }
+      }
+    }
+    if (cancelExport) { venc.close(); aenc && aenc.close(); return null; }
+    await venc.flush(); if (aenc) await aenc.flush();
+    if (encErr) throw encErr;
+    muxer.finalize();
+    return new Blob([target.buffer], { type: 'video/mp4' });
+  }
+
+  async function exportVideo() {
+    if (!window.VideoEncoder || !window.VideoFrame) return exportRealtime();
+    exporting = true; cancelExport = false;
+    $('exportOverlay').hidden = false;
+    $('exportOverlay').querySelector('small').textContent = '프레임 단위로 인코딩합니다. 완료까지 탭을 유지해 주세요.';
+    setProgress(0);
+    $('exportCancel').onclick = () => { cancelExport = true; };
+    pause(); setMode('all');
+    let blob = null, fallback = false;
+    try { blob = await exportWebCodecs(); }
+    catch (e) {
+      console.warn('WebCodecs export failed', e);
+      fallback = true;
+    }
+    exporting = false;
+    $('exportOverlay').hidden = true;
+    playIdx = 0; v.currentTime = segs[0].start;
+    if (fallback) { alert('이 브라우저에서는 고속 내보내기를 쓸 수 없어 실시간 녹화 방식으로 내보냅니다.'); return exportRealtime(); }
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'edited.mp4';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
