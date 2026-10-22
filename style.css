@@ -138,3 +138,11 @@ video { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events:
 .srcsel input { width: 62px; }
 .srcsel .d { font-variant-numeric: tabular-nums; }
 .srcsel .btn { padding: 4px 10px; font-size: 12px; margin-left: auto; }
+
+/* keyframes: ◆ controls in the panels, markers on the timeline */
+.kfc { float: right; display: inline-flex; gap: 2px; }
+.kfc button { background: #262b33; border: 1px solid var(--line); color: var(--mute); border-radius: 4px; padding: 0 5px; line-height: 16px; font: inherit; font-size: 11px; cursor: pointer; }
+.kfc button.kf { color: #8fb4ff; border-color: #4f6fb0; }
+.kfc button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.kfm { position: absolute; top: 3px; width: 9px; height: 9px; background: #ffd34d; border: 1px solid #5a4500; transform: rotate(45deg); z-index: 4; cursor: ew-resize; }
+.oclip .kfm { top: 8px; }
