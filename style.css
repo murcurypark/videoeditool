@@ -122,3 +122,5 @@ video { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events:
 .cutview .actions { margin-bottom: 10px; }
 .cutview select { width: 100%; }
 .cutview .f output { width: 40px; }
+.fadeout { position: absolute; top: 0; height: 60px; z-index: 2; pointer-events: none; border-radius: 0 6px 6px 0;
+  background: linear-gradient(90deg, rgba(0,0,0,0), rgba(0,0,0,.9)); }
