@@ -26,6 +26,8 @@
   let guides = { x: false, y: false };
   const pending = [];     // files being loaded / failed to load, shown in the cut list
   let prepped = -1;       // index of the cut whose video was pre-seeked
+  let srcSel = null;      // range picked on a source bar: {id, a, b} (source seconds)
+  let relinkTarget = null; // source waiting for the file picked in #relinkFile
   let out = null;         // {el, idx}: element showing the outgoing cut while a transition plays
   let cropMode = false;   // crop handles shown on the preview
   let cropLockKey = 'free'; // aspect lock while dragging crop corners
@@ -92,7 +94,7 @@
 
   function outSize() {
     if (RATIOS[ratioKey]) return RATIOS[ratioKey];
-    const s = sources[0];
+    const s = sources.find((x) => !x.removed);
     return s ? [s.w & ~1, s.h & ~1] : [1920, 1080];
   }
   function setupCanvas() {
@@ -114,13 +116,14 @@
 
   // ---------- history ----------
   function snapshot() {
-    history.push(JSON.stringify({ segs, overlays, sel, selOv }));
+    history.push(JSON.stringify({ segs, overlays, sel, selOv, rm: sources.filter((x) => x.removed).map((x) => x.id) }));
     if (history.length > 100) history.shift();
     $('undo').disabled = false;
   }
   function undo() {
     if (!history.length || exporting) return;
     const h = JSON.parse(history.pop());
+    for (const x of sources) x.removed = (h.rm || []).includes(x.id);
     segs = h.segs; overlays = h.overlays; sel = clamp(h.sel, 0, segs.length - 1);
     selOv = ovOf(h.selOv) ? h.selOv : null;
     const i = clamp(playIdx, 0, segs.length - 1);
@@ -131,7 +134,7 @@
 
   // ---------- loading videos ----------
   const VIDEO_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mts|m2ts|ts|3gp|ogv|mpg|mpeg)$/i;
-  async function addFiles(files) {
+  async function addFiles(files, forced) {
     if (!loaded() && !$('restoreBar').hidden && files.length && !confirm('저장된 이전 작업이 있습니다.\n새 작업을 시작하면 이전 작업이 덮어써집니다. 계속할까요?')) return;
     if (!loaded()) $('restoreBar').hidden = true;
     for (const f of files) {
@@ -139,7 +142,7 @@
       const p = { name: f.name, state: 'loading', msg: '' };
       pending.push(p); renderList();
       if (!f.type.startsWith('video/') && !VIDEO_EXT.test(f.name)) { p.state = 'error'; p.msg = '영상 파일이 아닙니다.'; renderList(); continue; }
-      try { await addFile(f); pending.splice(pending.indexOf(p), 1); }
+      try { await addFile(f, forced); pending.splice(pending.indexOf(p), 1); }
       catch (e) { p.state = 'error'; p.msg = e.message; }
       renderList();
     }
@@ -163,11 +166,19 @@
     $('undo').disabled = !history.length;
   }
 
-  async function addFile(file) {
+  async function addFile(file, forced) {
     // a saved project may be waiting for its original files: match by name + size, else offer to relink
-    let target = sources.find((s) => s.missing && inUse(s) && s.name === file.name && s.size === file.size);
+    let target = forced || sources.find((s) => s.missing && !s.removed && s.name === file.name && s.size === file.size);
+    const dup = !target && sources.find((s) => !s.missing && !s.removed && s.name === file.name && s.size === file.size);
+    if (dup) {   // already in the source list: just add a cut covering all of it
+      snapshot();
+      segs.push({ id: nextId++, src: dup.id, start: 0, end: dup.duration });
+      sel = segs.length - 1;
+      fitZoom(); render();
+      return;
+    }
     if (!target) {
-      const m = sources.find((s) => s.missing && inUse(s));
+      const m = sources.find((s) => s.missing && !s.removed && inUse(s));
       if (m && confirm(`'${file.name}'은(는) 저장된 영상과 이름/크기가 다릅니다.\n누락된 '${m.name}' 대신 연결할까요?\n(취소하면 새 영상으로 추가합니다)`)) target = m;
     }
     const el = makeVideoEl();
@@ -226,7 +237,7 @@
       c.width = w; c.height = THUMB_H;
       c.getContext('2d').drawImage(tv, 0, 0, w, THUMB_H);
       src.thumbs.push(c);
-      if (k % 6 === 5 || k === n - 1) drawBlocks();
+      if (k % 6 === 5 || k === n - 1) { drawBlocks(); drawSrcBars(); }
     }
   }
 
@@ -726,6 +737,7 @@
     renderList();
     renderTabs();
     renderCutView();
+    renderSources();
     updateTime();
     $('del').disabled = segs.length <= 1 && !selOv;
   }
@@ -880,11 +892,146 @@
     }
   }
 
+  // ---------- source list: every loaded video with its used / unused parts; pick a range to add it as a cut ----------
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const liveSources = () => sources.filter((x) => !x.removed);
+
+  function renderSources() {
+    const box = $('panelSources'), list = liveSources();
+    if (!list.length) { box.innerHTML = '<p class="hint">영상을 추가하면 여기에 소스가 표시됩니다.</p>'; return; }
+    box.innerHTML = '<p class="hint">막대에서 구간을 끌어 고르거나 어두운(안 쓰는) 부분을 클릭하면 그 구간이 선택됩니다. [컷으로 추가]는 선택한 컷 뒤에 들어갑니다.</p>' +
+      list.map((src) => {
+        const used = segs.filter((sg) => sg.src === src.id).length, sl = srcSel && srcSel.id === src.id ? srcSel : null;
+        return `<div class="srcitem" data-id="${src.id}">` +
+          `<div class="srchead"><em style="color:hsl(${src.hue} 70% 70%)">${src.missing ? '⚠ ' : ''}${esc(src.name)}</em><small>${fmt(src.duration).replace(/\.\d+$/, '')} · 컷 ${used}개</small>` +
+          (src.missing ? '<button data-sa="relink" title="파일 다시 연결">연결</button>' : '') + '<button data-sa="remove" title="소스 삭제">✕</button></div>' +
+          '<canvas class="srcbar" height="44"></canvas>' +
+          (sl ? `<div class="srcsel"><label>시작 <input type="number" data-sa="a" min="0" max="${src.duration.toFixed(2)}" step="0.1" value="${sl.a.toFixed(2)}"></label>` +
+            `<label>끝 <input type="number" data-sa="b" min="0" max="${src.duration.toFixed(2)}" step="0.1" value="${sl.b.toFixed(2)}"></label>` +
+            `<span class="d">${(sl.b - sl.a).toFixed(1)}초</span><button class="btn primary" data-sa="add">컷으로 추가</button></div>` : '') + '</div>';
+      }).join('');
+    drawSrcBars();
+  }
+
+  function drawSrcBar(src, c) {
+    const W = c.width = Math.max(60, c.clientWidth || 0), H = c.height, ctx = c.getContext('2d');
+    if (!c.clientWidth) return;   // panel hidden
+    const x = (t) => t / src.duration * W;
+    const thumbs = () => {
+      if (!src.thumbs.length) { ctx.fillStyle = `hsl(${src.hue} 25% 28%)`; ctx.fillRect(0, 0, W, H); return; }
+      const tw = W / src.thumbs.length;
+      src.thumbs.forEach((t, k) => ctx.drawImage(t, k * tw, 0, tw + 1, H));
+    };
+    ctx.fillStyle = '#14161a'; ctx.fillRect(0, 0, W, H);
+    thumbs();
+    ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(0, 0, W, H);   // unused parts stay dark
+    segs.forEach((sg, i) => {
+      if (sg.src !== src.id) return;
+      const x0 = x(sg.start), w = Math.max(2, x(sg.end) - x0);
+      ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, w, H); ctx.clip(); thumbs(); ctx.restore();
+      ctx.strokeStyle = `hsl(${src.hue} 70% 62%)`; ctx.lineWidth = 2; ctx.strokeRect(x0 + 1, 1, w - 2, H - 2);
+      ctx.fillStyle = '#fff'; ctx.font = '700 11px sans-serif'; ctx.textBaseline = 'top';
+      ctx.save(); ctx.shadowColor = '#000'; ctx.shadowBlur = 3; ctx.fillText(String(i + 1), x0 + 4, 3); ctx.restore();
+    });
+    if (srcSel && srcSel.id === src.id) {
+      const x0 = x(srcSel.a), w = Math.max(2, x(srcSel.b) - x0);
+      ctx.fillStyle = 'rgba(79,140,255,.38)'; ctx.fillRect(x0, 0, w, H);
+      ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 2; ctx.strokeRect(x0 + 1, 1, w - 2, H - 2);
+    }
+  }
+  function drawSrcBars() {
+    if ($('panelSources').hidden) return;
+    $('panelSources').querySelectorAll('.srcitem').forEach((it) => {
+      const src = sources.find((x) => x.id === +it.dataset.id);
+      if (src) drawSrcBar(src, it.querySelector('canvas'));
+    });
+  }
+
+  // the cut's own range if t is inside a used part, else the whole unused gap around t
+  function rangeAt(src, t) {
+    const used = segs.filter((sg) => sg.src === src.id).map((sg) => [sg.start, sg.end]);
+    const hit = used.find(([a, b]) => t >= a && t <= b);
+    if (hit) return { a: hit[0], b: hit[1] };
+    let a = 0, b = src.duration;
+    for (const [s0, e0] of used) { if (e0 <= t) a = Math.max(a, e0); if (s0 >= t) b = Math.min(b, s0); }
+    return { a, b };
+  }
+
+  $('panelSources').addEventListener('pointerdown', (e) => {
+    const c = e.target.closest('.srcbar');
+    if (!c || exporting) return;
+    e.preventDefault();
+    const item = c.closest('.srcitem'), src = sources.find((x) => x.id === +item.dataset.id), r = c.getBoundingClientRect();
+    const tAt = (ev) => clamp((ev.clientX - r.left) / r.width, 0, 1) * src.duration, t0 = tAt(e), x0 = e.clientX;
+    let dragged = false;
+    const move = (ev) => {
+      if (!dragged && Math.abs(ev.clientX - x0) < 4) return;
+      dragged = true;
+      const t1 = tAt(ev);
+      srcSel = { id: src.id, a: +Math.min(t0, t1).toFixed(2), b: +Math.max(t0, t1).toFixed(2) };
+      drawSrcBar(src, c);
+    };
+    const up = () => {
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+      if (!dragged) { const q = rangeAt(src, t0); srcSel = { id: src.id, a: +q.a.toFixed(2), b: +q.b.toFixed(2) }; }
+      renderSources();
+    };
+    addEventListener('pointermove', move); addEventListener('pointerup', up);
+  });
+  $('panelSources').addEventListener('change', (e) => {
+    const el = e.target, sa = el.dataset.sa;
+    if ((sa !== 'a' && sa !== 'b') || !srcSel) return;
+    const src = sources.find((x) => x.id === srcSel.id), v = clamp(+el.value || 0, 0, src.duration);
+    if (sa === 'a') srcSel.a = +Math.min(v, srcSel.b).toFixed(2); else srcSel.b = +Math.max(v, srcSel.a).toFixed(2);
+    renderSources();
+  });
+  $('panelSources').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-sa]');
+    if (!b || exporting) return;
+    const src = sources.find((x) => x.id === +b.closest('.srcitem').dataset.id);
+    if (b.dataset.sa === 'add') addCutFromSource();
+    else if (b.dataset.sa === 'remove') removeSource(src);
+    else if (b.dataset.sa === 'relink') { relinkTarget = src; $('relinkFile').click(); }
+  });
+  $('relinkFile').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && relinkTarget) addFiles([f], relinkTarget); };
+
+  // insert the picked range as a new cut right after the selected cut
+  function addCutFromSource() {
+    const src = srcSel && sources.find((x) => x.id === srcSel.id);
+    if (!src || !loaded()) return;
+    const a = clamp(srcSel.a, 0, src.duration), b = clamp(srcSel.b, 0, src.duration);
+    if (b - a < MIN_LEN) { alert('구간이 너무 짧습니다 (최소 ' + MIN_LEN + '초).'); return; }
+    snapshot();
+    const idx = clamp(sel, 0, segs.length - 1) + 1;
+    segs.splice(idx, 0, { id: nextId++, src: src.id, start: a, end: b });
+    sel = idx; selOv = null; srcSel = null;
+    goto(idx, a);
+    fitZoom(); render(); renderEdit();
+  }
+
+  // take a video out of the source list (and its cuts out of the timeline); undo brings both back
+  function removeSource(src) {
+    const used = segs.filter((sg) => sg.src === src.id);
+    if (used.length >= segs.length) { alert('이 영상이 마지막 컷을 이루고 있어 지울 수 없습니다. 다른 컷이 있어야 합니다.'); return; }
+    if (used.length && !confirm(`'${src.name}'을(를) 쓰는 컷 ${used.length}개도 타임라인에서 함께 삭제됩니다. 계속할까요?`)) return;
+    snapshot();
+    segs = segs.filter((sg) => sg.src !== src.id);
+    src.removed = true;
+    if (srcSel && srcSel.id === src.id) srcSel = null;
+    sel = clamp(sel, 0, segs.length - 1);
+    const i = clamp(playIdx, 0, segs.length - 1);
+    goto(i, segs[i].start);
+    fitZoom(); render(); renderEdit();
+  }
+
   function renderTabs() {
+    $('tabSources').classList.toggle('on', tab === 'sources');
     $('tabCuts').classList.toggle('on', tab === 'cuts');
     $('tabEdit').classList.toggle('on', tab === 'edit');
+    $('panelSources').hidden = tab !== 'sources';
     $('panelCuts').hidden = tab !== 'cuts';
     $('panelEdit').hidden = tab !== 'edit';
+    if (tab === 'sources') drawSrcBars();
   }
 
   function movePlayhead() {
@@ -1470,12 +1617,12 @@
   const kvSet = (k, val) => kv('readwrite', (s) => s.put(val, k));
   const kvDel = (k) => kv('readwrite', (s) => s.delete(k));
 
-  // saved projects (and autosaves) only list the videos / images the final cuts and overlays actually use
+  // saved projects (and autosaves) keep the whole source list (so unused parts can be brought back); only pictures no overlay uses are left out
   function serialize() {
-    const usedSrc = new Set(segs.map((sg) => sg.src)), usedImg = new Set(overlays.filter((o) => o.type === 'image').map((o) => o.imgId));
+    const usedImg = new Set(overlays.filter((o) => o.type === 'image').map((o) => o.imgId));
     return {
       v: 1, ratioKey, fitMode, nextId, segs, overlays,
-      sources: sources.filter((s) => usedSrc.has(s.id)).map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
+      sources: sources.filter((s) => !s.removed).map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
       imgs: [...imgs].filter(([id]) => usedImg.has(id)).map(([id, im]) => ({ id, name: im.name, dataUrl: im.dataUrl })),
     };
   }
@@ -1591,6 +1738,7 @@
   $('addText').onclick = () => addText();
   $('saveProj').onclick = saveProjectFile;
   $('projFile').onchange = (e) => { openProjectFile(e.target.files[0]); e.target.value = ''; };
+  $('tabSources').onclick = () => { tab = 'sources'; renderTabs(); };
   $('tabCuts').onclick = () => { tab = 'cuts'; renderTabs(); };
   $('tabEdit').onclick = () => { tab = 'edit'; renderTabs(); renderEdit(); };
   $('ratio').onchange = (e) => { ratioKey = e.target.value; setupCanvas(); };
@@ -1614,7 +1762,8 @@
   window.__editor = {
     get segs() { return segs; }, get sources() { return sources; }, get overlays() { return overlays; }, get playIdx() { return playIdx; }, get view() { return view; },
     split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles, addImages, addText, undo, total, offset, tdur, drawScene, cropOf,
-    serialize, setIO(i, which, type, dur = 0.7) { segs[i][which] = { type, dur }; renderTimeline(); }, ioDurs, fxFor,
+    serialize, addCutFromSource, removeSource, selectRange(id, a, b) { srcSel = { id, a, b }; renderSources(); }, get srcSel() { return srcSel; },
+    setIO(i, which, type, dur = 0.7) { segs[i][which] = { type, dur }; renderTimeline(); }, ioDurs, fxFor,
     setTrans(i, type, dur = 0.5) { segs[i].trans = { type, dur }; renderTimeline(); }, setCrop(i, c) { setCrop(segs[i], c); }, exportVideo,
     setRatio(k) { $('ratio').value = k; ratioKey = k; setupCanvas(); }, setFit(k) { $('fit').value = k; fitMode = k; },
   };
