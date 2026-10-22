@@ -83,6 +83,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const loaded = () => segs.length > 0;
   const srcOf = (seg) => sources.find((s) => s.id === seg.src);
+  const inUse = (src) => segs.some((sg) => sg.src === src.id);   // a source no cut uses never needs to be (re)linked
   const ovOf = (id) => overlays.find((o) => o.id === id);
 
   // ---------- fonts / output size ----------
@@ -164,9 +165,9 @@
 
   async function addFile(file) {
     // a saved project may be waiting for its original files: match by name + size, else offer to relink
-    let target = sources.find((s) => s.missing && s.name === file.name && s.size === file.size);
+    let target = sources.find((s) => s.missing && inUse(s) && s.name === file.name && s.size === file.size);
     if (!target) {
-      const m = sources.find((s) => s.missing);
+      const m = sources.find((s) => s.missing && inUse(s));
       if (m && confirm(`'${file.name}'은(는) 저장된 영상과 이름/크기가 다릅니다.\n누락된 '${m.name}' 대신 연결할까요?\n(취소하면 새 영상으로 추가합니다)`)) target = m;
     }
     const el = makeVideoEl();
@@ -830,7 +831,7 @@
   function renderList() {
     const ol = $('cutList');
     ol.innerHTML = '';
-    const miss = sources.filter((s) => s.missing);
+    const miss = sources.filter((s) => s.missing && inUse(s));
     if (miss.length) {
       const li = document.createElement('li');
       li.className = 'pending err relink';
@@ -1442,7 +1443,7 @@
   }
 
   async function exportVideo() {
-    const miss = sources.filter((s) => s.missing);
+    const miss = sources.filter((s) => s.missing && inUse(s));
     if (miss.length) { alert('원본 영상을 다시 연결해야 내보낼 수 있습니다:\n' + miss.map((m) => '· ' + m.name).join('\n')); return; }
     if (!window.VideoEncoder || !window.VideoFrame) return exportRealtime();
     exporting = true; cancelExport = false;
@@ -1507,8 +1508,9 @@
     ratioKey = RATIOS[p.ratioKey] || p.ratioKey === 'orig' ? p.ratioKey : 'orig';
     fitMode = p.fitMode === 'cover' ? 'cover' : 'contain';
     $('ratio').value = ratioKey; $('fit').value = fitMode;
-    for (const s of p.sources) sources.push({ ...s, file: null, url: null, el: makeVideoEl(), thumbs: [], audio: undefined, missing: true });
-    for (const im of p.imgs || []) {
+    const usedSrc = new Set(p.segs.map((sg) => sg.src)), usedImg = new Set((p.overlays || []).filter((o) => o.type === 'image').map((o) => o.imgId));
+    for (const s of p.sources) if (usedSrc.has(s.id)) sources.push({ ...s, file: null, url: null, el: makeVideoEl(), thumbs: [], audio: undefined, missing: true });
+    for (const im of (p.imgs || []).filter((x) => usedImg.has(x.id))) {
       const el = new Image(); el.src = im.dataUrl;
       try { await el.decode(); imgs.set(im.id, { el, w: el.naturalWidth || 400, h: el.naturalHeight || 400, name: im.name, dataUrl: im.dataUrl }); } catch (e) { /* skip broken image */ }
     }
