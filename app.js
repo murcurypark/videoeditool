@@ -26,6 +26,8 @@
   let guides = { x: false, y: false };
   const pending = [];     // files being loaded / failed to load, shown in the cut list
   let prepped = -1;       // index of the cut whose video was pre-seeked
+  let srcSel = null;      // range picked on a source bar: {id, a, b} (source seconds)
+  let relinkTarget = null; // source waiting for the file picked in #relinkFile
   let out = null;         // {el, idx}: element showing the outgoing cut while a transition plays
   let cropMode = false;   // crop handles shown on the preview
   let cropLockKey = 'free'; // aspect lock while dragging crop corners
@@ -83,6 +85,84 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const loaded = () => segs.length > 0;
   const srcOf = (seg) => sources.find((s) => s.id === seg.src);
+  // ---------- keyframes: a property with keyframes follows its values over time (seconds from the start of the cut / clip) ----------
+  const KF_CUT = ['zoom', 'px', 'py'], KF_OV = ['x', 'y', 'size', 'w', 'rot', 'opacity'];
+  const KF_EPS = 0.5 / FPS;
+  const KF_EASE = [['ease', '부드럽게'], ['linear', '직선'], ['hold', '유지(계단)']];
+  const kfCount = (o) => Object.values(o.kf || {}).reduce((a, ks) => a + ks.length, 0);
+  function kfSample(ks, t, ease) {
+    if (t <= ks[0].t) return ks[0].v;
+    const last = ks[ks.length - 1];
+    if (t >= last.t) return last.v;
+    let i = 1;
+    while (ks[i].t < t) i++;
+    const a = ks[i - 1], b = ks[i];
+    if (ease === 'hold') return a.v;
+    let u = (t - a.t) / (b.t - a.t);
+    if (ease !== 'linear') u = u * u * (3 - 2 * u);
+    return a.v + (b.v - a.v) * u;
+  }
+  // the cut's / overlay's properties as they are at that moment (tc = seconds into the cut, t = timeline time)
+  function resolveSeg(seg, tc) {
+    const k = seg && seg.kf;
+    if (!k) return seg;
+    const r = { ...seg };
+    for (const key of KF_CUT) if (k[key] && k[key].length) r[key] = kfSample(k[key], tc, seg.kfEase);
+    return r;
+  }
+  function resolveOv(o, t) {
+    const k = o.kf;
+    if (!k) return o;
+    const r = { ...o };
+    for (const key of KF_OV) if (k[key] && k[key].length) r[key] = kfSample(k[key], t - o.start, o.kfEase);
+    return r;
+  }
+  // write a property: with keyframes it sets (or adds) the keyframe at time t, without them it sets the fixed value
+  function setProp(obj, key, v, t) {
+    const ks = obj.kf && obj.kf[key];
+    if (!ks || !ks.length) { obj[key] = v; return; }
+    const near = ks.find((k) => Math.abs(k.t - t) < KF_EPS);
+    if (near) near.v = v; else { ks.push({ t: +t.toFixed(3), v }); ks.sort((a, b) => a.t - b.t); }
+  }
+  // ◆: add a keyframe holding the current value, or remove the one at t (removing the last one makes the value fixed again)
+  function toggleKf(obj, key, t, cur) {
+    obj.kf = obj.kf || {};
+    const ks = obj.kf[key] || (obj.kf[key] = []), i = ks.findIndex((k) => Math.abs(k.t - t) < KF_EPS);
+    if (i < 0) { ks.push({ t: +t.toFixed(3), v: cur }); ks.sort((a, b) => a.t - b.t); return; }
+    if (ks.length === 1) obj[key] = ks[0].v;
+    ks.splice(i, 1);
+    if (!ks.length) delete obj.kf[key];
+    if (!Object.keys(obj.kf).length) delete obj.kf;
+  }
+  const kfTimes = (o) => [...new Set(Object.values(o.kf || {}).flat().map((k) => +k.t.toFixed(3)))].sort((a, b) => a - b);
+  // cut a keyframe set at ts: [left part, right part (times shifted to start at 0)], both continue the value at ts
+  function splitKf(kf, ts) {
+    if (!kf) return [undefined, undefined];
+    const L = {}, R = {};
+    for (const key of Object.keys(kf)) {
+      const ks = kf[key], v = kfSample(ks, ts, 'linear');
+      L[key] = [...ks.filter((k) => k.t < ts - 1e-6).map((k) => ({ ...k })), { t: ts, v }];
+      R[key] = [{ t: 0, v }, ...ks.filter((k) => k.t > ts + 1e-6).map((k) => ({ ...k, t: k.t - ts }))];
+    }
+    return [L, R];
+  }
+  function cleanKf(o, keys) {
+    const k = o.kf, out = {};
+    if (k && typeof k === 'object') {
+      for (const key of keys) {
+        if (!Array.isArray(k[key])) continue;
+        const ks = k[key].filter((x) => x && Number.isFinite(x.t) && Number.isFinite(x.v) && x.t >= 0).map((x) => ({ t: x.t, v: x.v })).sort((a, b) => a.t - b.t);
+        if (ks.length) out[key] = ks;
+      }
+    }
+    if (Object.keys(out).length) o.kf = out; else delete o.kf;
+    if (o.kfEase !== 'linear' && o.kfEase !== 'hold') delete o.kfEase;
+  }
+  const kfCtl = (key) => `<span class="kfc"><button type="button" data-kfa="prev" data-kfk="${key}" title="이전 키프레임">‹</button><button type="button" data-kfa="tog" data-kfk="${key}" title="이 시점에 키프레임 추가/삭제">◆</button><button type="button" data-kfa="next" data-kfk="${key}" title="다음 키프레임">›</button></span>`;
+  const kfEaseSel = () => `<div class="f"><label>키프레임 사이 변화</label><select data-kfease>${KF_EASE.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select></div>`;
+  const ovT = (o) => clamp(editTime() - o.start, 0, o.end - o.start);   // playhead as seconds into the overlay clip (keyframe time)
+  const curTc = () => (segs[playIdx] ? clamp(editTime() - offset(playIdx), 0, len(segs[playIdx])) : 0);
+
   const inUse = (src) => segs.some((sg) => sg.src === src.id);   // a source no cut uses never needs to be (re)linked
   const ovOf = (id) => overlays.find((o) => o.id === id);
 
@@ -92,7 +172,7 @@
 
   function outSize() {
     if (RATIOS[ratioKey]) return RATIOS[ratioKey];
-    const s = sources[0];
+    const s = sources.find((x) => !x.removed);
     return s ? [s.w & ~1, s.h & ~1] : [1920, 1080];
   }
   function setupCanvas() {
@@ -114,13 +194,14 @@
 
   // ---------- history ----------
   function snapshot() {
-    history.push(JSON.stringify({ segs, overlays, sel, selOv }));
+    history.push(JSON.stringify({ segs, overlays, sel, selOv, rm: sources.filter((x) => x.removed).map((x) => x.id) }));
     if (history.length > 100) history.shift();
     $('undo').disabled = false;
   }
   function undo() {
     if (!history.length || exporting) return;
     const h = JSON.parse(history.pop());
+    for (const x of sources) x.removed = (h.rm || []).includes(x.id);
     segs = h.segs; overlays = h.overlays; sel = clamp(h.sel, 0, segs.length - 1);
     selOv = ovOf(h.selOv) ? h.selOv : null;
     const i = clamp(playIdx, 0, segs.length - 1);
@@ -131,7 +212,7 @@
 
   // ---------- loading videos ----------
   const VIDEO_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mts|m2ts|ts|3gp|ogv|mpg|mpeg)$/i;
-  async function addFiles(files) {
+  async function addFiles(files, forced) {
     if (!loaded() && !$('restoreBar').hidden && files.length && !confirm('저장된 이전 작업이 있습니다.\n새 작업을 시작하면 이전 작업이 덮어써집니다. 계속할까요?')) return;
     if (!loaded()) $('restoreBar').hidden = true;
     for (const f of files) {
@@ -139,7 +220,7 @@
       const p = { name: f.name, state: 'loading', msg: '' };
       pending.push(p); renderList();
       if (!f.type.startsWith('video/') && !VIDEO_EXT.test(f.name)) { p.state = 'error'; p.msg = '영상 파일이 아닙니다.'; renderList(); continue; }
-      try { await addFile(f); pending.splice(pending.indexOf(p), 1); }
+      try { await addFile(f, forced); pending.splice(pending.indexOf(p), 1); }
       catch (e) { p.state = 'error'; p.msg = e.message; }
       renderList();
     }
@@ -163,11 +244,19 @@
     $('undo').disabled = !history.length;
   }
 
-  async function addFile(file) {
+  async function addFile(file, forced) {
     // a saved project may be waiting for its original files: match by name + size, else offer to relink
-    let target = sources.find((s) => s.missing && inUse(s) && s.name === file.name && s.size === file.size);
+    let target = forced || sources.find((s) => s.missing && !s.removed && s.name === file.name && s.size === file.size);
+    const dup = !target && sources.find((s) => !s.missing && !s.removed && s.name === file.name && s.size === file.size);
+    if (dup) {   // already in the source list: just add a cut covering all of it
+      snapshot();
+      segs.push({ id: nextId++, src: dup.id, start: 0, end: dup.duration });
+      sel = segs.length - 1;
+      fitZoom(); render();
+      return;
+    }
     if (!target) {
-      const m = sources.find((s) => s.missing && inUse(s));
+      const m = sources.find((s) => s.missing && !s.removed && inUse(s));
       if (m && confirm(`'${file.name}'은(는) 저장된 영상과 이름/크기가 다릅니다.\n누락된 '${m.name}' 대신 연결할까요?\n(취소하면 새 영상으로 추가합니다)`)) target = m;
     }
     const el = makeVideoEl();
@@ -226,7 +315,7 @@
       c.width = w; c.height = THUMB_H;
       c.getContext('2d').drawImage(tv, 0, 0, w, THUMB_H);
       src.thumbs.push(c);
-      if (k % 6 === 5 || k === n - 1) drawBlocks();
+      if (k % 6 === 5 || k === n - 1) { drawBlocks(); drawSrcBars(); }
     }
   }
 
@@ -308,6 +397,8 @@
     if (!o || t - o.start < OV_MIN || o.end - t < OV_MIN) return false;
     snapshot();
     const b = { ...JSON.parse(JSON.stringify(o)), id: nextId++, start: t };
+    const [kl, kr] = splitKf(o.kf, t - o.start);
+    if (kl) { o.kf = kl; b.kf = kr; }
     o.end = t;
     overlays.push(b); selOv = b.id;
     render(); renderEdit();
@@ -384,7 +475,7 @@
   const cropOf = (seg) => (seg && seg.crop) || FULL;
   const CROP_HANDLES = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
   function geom(cw, ch, L) {
-    const s = L.seg || {}, z = s.zoom || 1;
+    const s = resolveSeg(L.seg || {}, L.tc || 0), z = s.zoom || 1;
     const sc = (fitMode === 'cover' ? Math.max(cw / L.w, ch / L.h) : Math.min(cw / L.w, ch / L.h)) * z;
     return { dw: L.w * sc, dh: L.h * sc, cx: cw / 2 + (s.px || 0) * cw, cy: ch / 2 + (s.py || 0) * ch, f: s.flip ? -1 : 1 };
   }
@@ -469,7 +560,7 @@
         if (ui && cropMode) drawLayer(c, cw, ch, main, 'faint');
         drawLayer(c, cw, ch, main, 'nobg');
       }
-      for (const ov of drawOrder(activeOverlays(t))) drawOverlay(c, ov, cw, ch);
+      for (const ov of drawOrder(activeOverlays(t))) drawOverlay(c, resolveOv(ov, t), cw, ch);
     };
     if (!fx) base(ctx);
     else {
@@ -487,13 +578,13 @@
         drawTransition(ctx, cw, ch, A, B, fx.type === 'fadeW' ? 'fade' : fx.type, fx.p);
       }
     }
-    if (ui && selOv) { const ov = ovOf(selOv); if (ov && t >= ov.start && t < ov.end) drawSelection(ctx, ov, cw, ch); }
+    if (ui && selOv) { const ov = ovOf(selOv); if (ov && t >= ov.start && t < ov.end) drawSelection(ctx, resolveOv(ov, t), cw, ch); }
     else if (ui && main && main.el) drawCutBox(ctx, cw, ch, main);
   }
 
   const mainLayer = () => {
     const seg = segs[playIdx], src = seg && srcOf(seg);
-    return src ? { el: src.missing ? null : v, w: src.w, h: src.h, seg } : null;
+    return src ? { el: src.missing ? null : v, w: src.w, h: src.h, seg, tc: curTc() } : null;
   };
 
   // While a transition plays, the previous cut keeps running on a second element. Returns its layer state (or null).
@@ -509,7 +600,7 @@
     else { if (!el.paused) el.pause(); if (Math.abs(el.currentTime - want) > 0.04) el.currentTime = want; }
     const p = clamp(dt / td, 0, 1);
     v.volume = Math.sin(p * Math.PI / 2); el.volume = Math.cos(p * Math.PI / 2);
-    return { el, seg: prev, p };
+    return { el, seg: prev, p, tc: len(prev) - td + dt };
   }
 
   function drawPreview() {
@@ -519,7 +610,7 @@
     let o = null, tr = null;
     const so = exporting ? null : syncOut();
     if (!exporting && !so) v.volume = fxGain(playIdx, editTime());
-    if (so) { const ps = srcOf(so.seg); o = { el: so.el, w: ps.w, h: ps.h, seg: so.seg }; tr = { type: seg.trans.type, p: so.p }; }
+    if (so) { const ps = srcOf(so.seg); o = { el: so.el, w: ps.w, h: ps.h, seg: so.seg, tc: so.tc }; tr = { type: seg.trans.type, p: so.p }; }
     drawScene(vctx, view.width, view.height, editTime(), main, o, tr, !exporting, fxFor(playIdx, editTime()));
     if (src.missing) {
       vctx.save(); vctx.fillStyle = 'rgba(255,255,255,.85)'; vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
@@ -554,8 +645,8 @@
     const p = toCanvas(e), t = editTime();
     const vis = activeOverlays(t).sort((a, b) => (a.lane || 0) - (b.lane || 0));
     const cur = selOv && vis.find((o) => o.id === selOv);
-    if (cur && hitHandle(cur, p)) return startScale(e, cur, p);
-    const hit = vis.find((o) => hitBody(o, p));
+    if (cur && hitHandle(resolveOv(cur, t), p)) return startScale(e, cur, p);
+    const hit = vis.find((o) => hitBody(resolveOv(o, t), p));
     if (hit) {
       if (selOv !== hit.id) { selOv = hit.id; tab = 'edit'; render(); renderEdit(); }
       return startMove(e, hit, p);
@@ -572,15 +663,17 @@
     const seg = segs[playIdx];
     if (armedWheel) { snapshot(); armedWheel = false; }
     clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { armedWheel = true; renderCutView(); }, 400);
-    seg.zoom = +clamp((seg.zoom || 1) * (e.deltaY < 0 ? 1.06 : 1 / 1.06), 0.2, 5).toFixed(3);
+    const tc = curTc(), n0 = kfCount(seg);
+    setProp(seg, 'zoom', +clamp((resolveSeg(seg, tc).zoom || 1) * (e.deltaY < 0 ? 1.06 : 1 / 1.06), 0.2, 5).toFixed(3), tc);
+    if (kfCount(seg) !== n0) renderTimeline();
   }, { passive: false });
   let armedWheel = true, wheelTimer = 0;
   view.addEventListener('pointermove', (e) => {
     if (!loaded() || exporting || e.buttons) return;
-    const p = toCanvas(e), vis = activeOverlays(editTime());
+    const p = toCanvas(e), t = editTime(), vis = activeOverlays(t);
     const cur = selOv && vis.find((o) => o.id === selOv);
     const hh = !selOv && hitCutHandle(p);
-    view.style.cursor = cur && hitHandle(cur, p) ? 'nwse-resize' : vis.some((o) => hitBody(o, p)) ? 'move'
+    view.style.cursor = cur && hitHandle(resolveOv(cur, t), p) ? 'nwse-resize' : vis.some((o) => hitBody(resolveOv(o, t), p)) ? 'move'
       : hh ? (hh[0] && hh[1] ? (hh[0] * hh[1] > 0 ? 'nwse-resize' : 'nesw-resize') : hh[0] ? 'ew-resize' : 'ns-resize')
       : cropMode && insideCrop(p) ? 'move' : 'grab';
   });
@@ -592,29 +685,29 @@
   function startMove(e, o, p0) {
     e.preventDefault();
     snapshot();
-    const ox = o.x, oy = o.y;
+    const r0 = resolveOv(o, editTime()), ox = r0.x, oy = r0.y, n0 = kfCount(o);
     dragWindow((ev) => {
-      const p = toCanvas(ev);
+      const p = toCanvas(ev), t = ovT(o);
       let x = clamp(ox + (p.x - p0.x) / view.width, 0, 1), y = clamp(oy + (p.y - p0.y) / view.height, 0, 1);
       guides.x = Math.abs(x - 0.5) < 0.012; guides.y = Math.abs(y - 0.5) < 0.012;
       if (guides.x) x = 0.5;
       if (guides.y) y = 0.5;
-      o.x = x; o.y = y;
-    });
+      setProp(o, 'x', x, t); setProp(o, 'y', y, t);
+    }, () => { if (kfCount(o) !== n0) renderTimeline(); kfUiRefresh(); });
   }
   function startPan(e, seg, p0) {
     e.preventDefault();
     snapshot();
-    const ox = seg.px || 0, oy = seg.py || 0;
+    const r0 = resolveSeg(seg, curTc()), ox = r0.px || 0, oy = r0.py || 0, n0 = kfCount(seg);
     view.style.cursor = 'grabbing';
     dragWindow((ev) => {
-      const p = toCanvas(ev);
+      const p = toCanvas(ev), tc = curTc();
       let x = clamp(ox + (p.x - p0.x) / view.width, -2, 2), y = clamp(oy + (p.y - p0.y) / view.height, -2, 2);
       guides.x = Math.abs(x) < 0.01; guides.y = Math.abs(y) < 0.01;
       if (guides.x) x = 0;
       if (guides.y) y = 0;
-      seg.px = +x.toFixed(4); seg.py = +y.toFixed(4);
-    }, () => { view.style.cursor = 'default'; renderCutView(); });
+      setProp(seg, 'px', +x.toFixed(4), tc); setProp(seg, 'py', +y.toFixed(4), tc);
+    }, () => { view.style.cursor = 'default'; if (kfCount(seg) !== n0) renderTimeline(); renderCutView(); });
   }
   // ----- cut handles: scale (zoom) the cut, or crop it (crop mode) -----
   const toLocal = (g, p) => ({ x: (p.x - g.cx) * g.f, y: p.y - g.cy });
@@ -640,11 +733,11 @@
     e.preventDefault();
     snapshot();
     const seg = segs[playIdx], g = geom(view.width, view.height, mainLayer());
-    const d0 = Math.hypot(p0.x - g.cx, p0.y - g.cy) || 1, z0 = seg.zoom || 1;
+    const d0 = Math.hypot(p0.x - g.cx, p0.y - g.cy) || 1, z0 = resolveSeg(seg, curTc()).zoom || 1, n0 = kfCount(seg);
     dragWindow((ev) => {
       const p = toCanvas(ev);
-      seg.zoom = +clamp(z0 * Math.hypot(p.x - g.cx, p.y - g.cy) / d0, 0.2, 5).toFixed(3);
-    }, renderCutView);
+      setProp(seg, 'zoom', +clamp(z0 * Math.hypot(p.x - g.cx, p.y - g.cy) / d0, 0.2, 5).toFixed(3), curTc());
+    }, () => { if (kfCount(seg) !== n0) renderTimeline(); renderCutView(); });
   }
   function setCrop(seg, c) {
     const r = (x) => +x.toFixed(4);
@@ -695,23 +788,24 @@
     if (!L || !L.el) return;
     const cw = view.width, ch = view.height, c = cropOf(seg);
     const pick = fitMode === 'cover' ? Math.max : Math.min;
-    const sc0 = pick(cw / L.w, ch / L.h), f = seg.flip ? -1 : 1;
-    seg.zoom = +clamp(pick(cw / (c.w * L.w), ch / (c.h * L.h)) / sc0, 0.2, 5).toFixed(3);
-    const sc = sc0 * seg.zoom;
-    seg.px = +(-f * (c.x + c.w / 2 - 0.5) * L.w * sc / cw).toFixed(4);
-    seg.py = +(-(c.y + c.h / 2 - 0.5) * L.h * sc / ch).toFixed(4);
+    const sc0 = pick(cw / L.w, ch / L.h), f = seg.flip ? -1 : 1, n0 = kfCount(seg);
+    const zoom = +clamp(pick(cw / (c.w * L.w), ch / (c.h * L.h)) / sc0, 0.2, 5).toFixed(3), sc = sc0 * zoom;
+    setProp(seg, 'zoom', zoom, L.tc);
+    setProp(seg, 'px', +(-f * (c.x + c.w / 2 - 0.5) * L.w * sc / cw).toFixed(4), L.tc);
+    setProp(seg, 'py', +(-(c.y + c.h / 2 - 0.5) * L.h * sc / ch).toFixed(4), L.tc);
+    if (kfCount(seg) !== n0) renderTimeline();
   }
 
   function startScale(e, o, p0) {
     e.preventDefault();
     snapshot();
-    const cx = o.x * view.width, cy = o.y * view.height;
+    const r0 = resolveOv(o, editTime()), cx = r0.x * view.width, cy = r0.y * view.height, n0 = kfCount(o);
     const d0 = Math.hypot(p0.x - cx, p0.y - cy) || 1;
-    const orig = o.type === 'text' ? o.size : o.w;
+    const key = o.type === 'text' ? 'size' : 'w', orig = r0[key];
     dragWindow((ev) => {
-      const p = toCanvas(ev), r = Math.hypot(p.x - cx, p.y - cy) / d0;
-      if (o.type === 'text') o.size = clamp(orig * r, 0.01, 0.4); else o.w = clamp(orig * r, 0.03, 2);
-    }, renderEdit);
+      const p = toCanvas(ev), r = Math.hypot(p.x - cx, p.y - cy) / d0, t = ovT(o);
+      setProp(o, key, o.type === 'text' ? clamp(orig * r, 0.01, 0.4) : clamp(orig * r, 0.03, 2), t);
+    }, () => { if (kfCount(o) !== n0) renderTimeline(); renderEdit(); });
   }
 
   // ---------- timeline rendering ----------
@@ -726,6 +820,7 @@
     renderList();
     renderTabs();
     renderCutView();
+    renderSources();
     updateTime();
     $('del').disabled = segs.length <= 1 && !selOv;
   }
@@ -740,6 +835,12 @@
     return ends.length;
   }
 
+  function kfMarker(kind, id, t) {
+    const m = document.createElement('i');
+    m.className = 'kfm'; m.dataset.kind = kind; m.dataset.id = id; m.dataset.t = t;
+    m.style.left = t * pps - 5 + 'px'; m.title = '키프레임 ' + t.toFixed(2) + '초 (끌어서 시점 이동)';
+    return m;
+  }
   function renderTimeline() {
     const w = Math.max(total() * pps + 40, scroller.clientWidth - 2);
     inner.style.width = ruler.style.width = track.style.width = otrack.style.width = w + 'px';
@@ -763,6 +864,7 @@
       b.title = src.name;
       b.innerHTML = '<canvas></canvas><b></b><i class="handle l"></i><i class="handle r"></i>';
       b.querySelector('b').textContent = (i + 1) + ' · ' + src.name + ' · ' + (seg.end - seg.start).toFixed(1) + 's';
+      kfTimes(seg).filter((t) => t <= len(seg) + 1e-3).forEach((t) => b.appendChild(kfMarker('cut', seg.id, t)));
       track.appendChild(b);
     });
     segs.forEach((seg, i) => {   // transition zones (the two cuts overlap here)
@@ -803,6 +905,7 @@
       c.dataset.id = o.id;
       c.innerHTML = '<span></span><i class="handle l"></i><i class="handle r"></i>';
       c.querySelector('span').textContent = o.type === 'text' ? 'T ' + String(o.text).split('\n')[0] : '🖼 ' + imgs.get(o.imgId).name;
+      kfTimes(o).filter((t) => t <= o.end - o.start + 1e-3).forEach((t) => c.appendChild(kfMarker('ov', o.id, t)));
       otrack.appendChild(c);
     }
     drawBlocks();
@@ -880,11 +983,146 @@
     }
   }
 
+  // ---------- source list: every loaded video with its used / unused parts; pick a range to add it as a cut ----------
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const liveSources = () => sources.filter((x) => !x.removed);
+
+  function renderSources() {
+    const box = $('panelSources'), list = liveSources();
+    if (!list.length) { box.innerHTML = '<p class="hint">영상을 추가하면 여기에 소스가 표시됩니다.</p>'; return; }
+    box.innerHTML = '<p class="hint">막대에서 구간을 끌어 고르거나 어두운(안 쓰는) 부분을 클릭하면 그 구간이 선택됩니다. [컷으로 추가]는 선택한 컷 뒤에 들어갑니다.</p>' +
+      list.map((src) => {
+        const used = segs.filter((sg) => sg.src === src.id).length, sl = srcSel && srcSel.id === src.id ? srcSel : null;
+        return `<div class="srcitem" data-id="${src.id}">` +
+          `<div class="srchead"><em style="color:hsl(${src.hue} 70% 70%)">${src.missing ? '⚠ ' : ''}${esc(src.name)}</em><small>${fmt(src.duration).replace(/\.\d+$/, '')} · 컷 ${used}개</small>` +
+          (src.missing ? '<button data-sa="relink" title="파일 다시 연결">연결</button>' : '') + '<button data-sa="remove" title="소스 삭제">✕</button></div>' +
+          '<canvas class="srcbar" height="44"></canvas>' +
+          (sl ? `<div class="srcsel"><label>시작 <input type="number" data-sa="a" min="0" max="${src.duration.toFixed(2)}" step="0.1" value="${sl.a.toFixed(2)}"></label>` +
+            `<label>끝 <input type="number" data-sa="b" min="0" max="${src.duration.toFixed(2)}" step="0.1" value="${sl.b.toFixed(2)}"></label>` +
+            `<span class="d">${(sl.b - sl.a).toFixed(1)}초</span><button class="btn primary" data-sa="add">컷으로 추가</button></div>` : '') + '</div>';
+      }).join('');
+    drawSrcBars();
+  }
+
+  function drawSrcBar(src, c) {
+    const W = c.width = Math.max(60, c.clientWidth || 0), H = c.height, ctx = c.getContext('2d');
+    if (!c.clientWidth) return;   // panel hidden
+    const x = (t) => t / src.duration * W;
+    const thumbs = () => {
+      if (!src.thumbs.length) { ctx.fillStyle = `hsl(${src.hue} 25% 28%)`; ctx.fillRect(0, 0, W, H); return; }
+      const tw = W / src.thumbs.length;
+      src.thumbs.forEach((t, k) => ctx.drawImage(t, k * tw, 0, tw + 1, H));
+    };
+    ctx.fillStyle = '#14161a'; ctx.fillRect(0, 0, W, H);
+    thumbs();
+    ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(0, 0, W, H);   // unused parts stay dark
+    segs.forEach((sg, i) => {
+      if (sg.src !== src.id) return;
+      const x0 = x(sg.start), w = Math.max(2, x(sg.end) - x0);
+      ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, w, H); ctx.clip(); thumbs(); ctx.restore();
+      ctx.strokeStyle = `hsl(${src.hue} 70% 62%)`; ctx.lineWidth = 2; ctx.strokeRect(x0 + 1, 1, w - 2, H - 2);
+      ctx.fillStyle = '#fff'; ctx.font = '700 11px sans-serif'; ctx.textBaseline = 'top';
+      ctx.save(); ctx.shadowColor = '#000'; ctx.shadowBlur = 3; ctx.fillText(String(i + 1), x0 + 4, 3); ctx.restore();
+    });
+    if (srcSel && srcSel.id === src.id) {
+      const x0 = x(srcSel.a), w = Math.max(2, x(srcSel.b) - x0);
+      ctx.fillStyle = 'rgba(79,140,255,.38)'; ctx.fillRect(x0, 0, w, H);
+      ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 2; ctx.strokeRect(x0 + 1, 1, w - 2, H - 2);
+    }
+  }
+  function drawSrcBars() {
+    if ($('panelSources').hidden) return;
+    $('panelSources').querySelectorAll('.srcitem').forEach((it) => {
+      const src = sources.find((x) => x.id === +it.dataset.id);
+      if (src) drawSrcBar(src, it.querySelector('canvas'));
+    });
+  }
+
+  // the cut's own range if t is inside a used part, else the whole unused gap around t
+  function rangeAt(src, t) {
+    const used = segs.filter((sg) => sg.src === src.id).map((sg) => [sg.start, sg.end]);
+    const hit = used.find(([a, b]) => t >= a && t <= b);
+    if (hit) return { a: hit[0], b: hit[1] };
+    let a = 0, b = src.duration;
+    for (const [s0, e0] of used) { if (e0 <= t) a = Math.max(a, e0); if (s0 >= t) b = Math.min(b, s0); }
+    return { a, b };
+  }
+
+  $('panelSources').addEventListener('pointerdown', (e) => {
+    const c = e.target.closest('.srcbar');
+    if (!c || exporting) return;
+    e.preventDefault();
+    const item = c.closest('.srcitem'), src = sources.find((x) => x.id === +item.dataset.id), r = c.getBoundingClientRect();
+    const tAt = (ev) => clamp((ev.clientX - r.left) / r.width, 0, 1) * src.duration, t0 = tAt(e), x0 = e.clientX;
+    let dragged = false;
+    const move = (ev) => {
+      if (!dragged && Math.abs(ev.clientX - x0) < 4) return;
+      dragged = true;
+      const t1 = tAt(ev);
+      srcSel = { id: src.id, a: +Math.min(t0, t1).toFixed(2), b: +Math.max(t0, t1).toFixed(2) };
+      drawSrcBar(src, c);
+    };
+    const up = () => {
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+      if (!dragged) { const q = rangeAt(src, t0); srcSel = { id: src.id, a: +q.a.toFixed(2), b: +q.b.toFixed(2) }; }
+      renderSources();
+    };
+    addEventListener('pointermove', move); addEventListener('pointerup', up);
+  });
+  $('panelSources').addEventListener('change', (e) => {
+    const el = e.target, sa = el.dataset.sa;
+    if ((sa !== 'a' && sa !== 'b') || !srcSel) return;
+    const src = sources.find((x) => x.id === srcSel.id), v = clamp(+el.value || 0, 0, src.duration);
+    if (sa === 'a') srcSel.a = +Math.min(v, srcSel.b).toFixed(2); else srcSel.b = +Math.max(v, srcSel.a).toFixed(2);
+    renderSources();
+  });
+  $('panelSources').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-sa]');
+    if (!b || exporting) return;
+    const src = sources.find((x) => x.id === +b.closest('.srcitem').dataset.id);
+    if (b.dataset.sa === 'add') addCutFromSource();
+    else if (b.dataset.sa === 'remove') removeSource(src);
+    else if (b.dataset.sa === 'relink') { relinkTarget = src; $('relinkFile').click(); }
+  });
+  $('relinkFile').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && relinkTarget) addFiles([f], relinkTarget); };
+
+  // insert the picked range as a new cut right after the selected cut
+  function addCutFromSource() {
+    const src = srcSel && sources.find((x) => x.id === srcSel.id);
+    if (!src || !loaded()) return;
+    const a = clamp(srcSel.a, 0, src.duration), b = clamp(srcSel.b, 0, src.duration);
+    if (b - a < MIN_LEN) { alert('구간이 너무 짧습니다 (최소 ' + MIN_LEN + '초).'); return; }
+    snapshot();
+    const idx = clamp(sel, 0, segs.length - 1) + 1;
+    segs.splice(idx, 0, { id: nextId++, src: src.id, start: a, end: b });
+    sel = idx; selOv = null; srcSel = null;
+    goto(idx, a);
+    fitZoom(); render(); renderEdit();
+  }
+
+  // take a video out of the source list (and its cuts out of the timeline); undo brings both back
+  function removeSource(src) {
+    const used = segs.filter((sg) => sg.src === src.id);
+    if (used.length >= segs.length) { alert('이 영상이 마지막 컷을 이루고 있어 지울 수 없습니다. 다른 컷이 있어야 합니다.'); return; }
+    if (used.length && !confirm(`'${src.name}'을(를) 쓰는 컷 ${used.length}개도 타임라인에서 함께 삭제됩니다. 계속할까요?`)) return;
+    snapshot();
+    segs = segs.filter((sg) => sg.src !== src.id);
+    src.removed = true;
+    if (srcSel && srcSel.id === src.id) srcSel = null;
+    sel = clamp(sel, 0, segs.length - 1);
+    const i = clamp(playIdx, 0, segs.length - 1);
+    goto(i, segs[i].start);
+    fitZoom(); render(); renderEdit();
+  }
+
   function renderTabs() {
+    $('tabSources').classList.toggle('on', tab === 'sources');
     $('tabCuts').classList.toggle('on', tab === 'cuts');
     $('tabEdit').classList.toggle('on', tab === 'edit');
+    $('panelSources').hidden = tab !== 'sources';
     $('panelCuts').hidden = tab !== 'cuts';
     $('panelEdit').hidden = tab !== 'edit';
+    if (tab === 'sources') drawSrcBars();
   }
 
   function movePlayhead() {
@@ -908,15 +1146,16 @@
     cutViewIdx = playIdx;
     if (!seg) { box.innerHTML = ''; return; }
     const row = (k, label, min, max, step, val, scale) =>
-      `<div class="f"><label>${label}</label><div class="row"><input type="range" data-cv="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div></div>`;
-    const c = cropOf(seg), pct = (x) => Math.max(0, Math.round(x * 100)), tr = curTrans(), eff = playIdx > 0 ? tdur(playIdx) : 0;
+      `<div class="f"><label>${label}${KF_CUT.includes(k) ? kfCtl(k) : ''}</label><div class="row"><input type="range" data-cv="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div></div>`;
+    const c = cropOf(seg), rs = resolveSeg(seg, curTc()), pct = (x) => Math.max(0, Math.round(x * 100)), tr = curTrans(), eff = playIdx > 0 ? tdur(playIdx) : 0;
     box.innerHTML = `<h3>컷 ${playIdx + 1} 화면</h3>` +
-      row('zoom', '확대', 20, 500, 1, Math.round((seg.zoom || 1) * 100), 0.01) +
-      row('px', '가로 위치', -100, 100, 1, Math.round((seg.px || 0) * 100), 0.01) +
-      row('py', '세로 위치', -100, 100, 1, Math.round((seg.py || 0) * 100), 0.01) +
+      row('zoom', '확대', 20, 500, 1, Math.round((rs.zoom || 1) * 100), 0.01) +
+      row('px', '가로 위치', -100, 100, 1, Math.round((rs.px || 0) * 100), 0.01) +
+      row('py', '세로 위치', -100, 100, 1, Math.round((rs.py || 0) * 100), 0.01) +
+      kfEaseSel() +
       `<div class="f"><label><input type="checkbox" data-cv="flip"> 좌우 반전</label></div>` +
       `<div class="actions"><button class="btn" data-cvreset="1">화면 초기화</button></div>` +
-      `<p class="hint">미리보기: 영상을 끌면 이동, 마우스 휠/오른쪽 아래 모서리 끌기로 확대·축소</p>` +
+      `<p class="hint">미리보기: 영상을 끌면 이동, 마우스 휠/오른쪽 아래 모서리 끌기로 확대·축소.<br>◆: 지금 시점에 키프레임 추가/삭제 (‹ ›: 이전/다음 키프레임). 키프레임이 있는 항목은 값을 바꾸면 그 시점의 키프레임이 갱신되고, 시점 사이는 자동으로 이어집니다.</p>` +
       `<h3>크롭 (잘라내기)</h3>` +
       `<div class="actions"><button class="btn${cropMode ? ' on' : ''}" data-cvact="crop">✂ 크롭 편집</button><button class="btn" data-cvact="fit">프레임에 맞추기</button><button class="btn" data-cvact="uncrop">크롭 해제</button></div>` +
       `<div class="f"><label>비율 고정</label><select data-cropar>${CROP_AR.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select></div>` +
@@ -940,6 +1179,8 @@
       `<p class="hint">시작·끝 효과는 화면(텍스트/이미지 포함)과 소리에 함께 적용됩니다. 영상 처음이나 끝처럼 이어지는 컷이 없을 때 쓰세요.</p>`);
     box.querySelector('[data-cv=flip]').checked = !!seg.flip;
     box.querySelector('[data-cropar]').value = cropLockKey;
+    box.querySelector('[data-kfease]').value = seg.kfEase || 'ease';
+    kfUiRefresh();
     box.querySelector('[data-tr=type]').value = tr.type;
     box.querySelector('[data-tr=dur]').disabled = tr.type === 'none';
   }
@@ -965,6 +1206,7 @@
       renderTimeline();
       return;
     }
+    if ('kfease' in el.dataset) { snapshot(); if (el.value === 'ease') delete seg.kfEase; else seg.kfEase = el.value; return; }
     if ('cropar' in el.dataset) { snapshot(); cropLockKey = el.value; applyCropRatio(); renderCutView(); return; }
     const k = el.dataset.cv;
     if (!k) return;
@@ -978,13 +1220,21 @@
       el.parentElement.querySelector('output').textContent = el.value;
       cropLockKey = 'free'; box.querySelector('[data-cropar]').value = 'free';
       setCrop(seg, { x: m.l, y: m.t, w: 1 - m.l - m.r, h: 1 - m.t - m.b });
-    } else { seg[k] = +(parseFloat(el.value) * parseFloat(el.dataset.scale)).toFixed(4); el.parentElement.querySelector('output').textContent = el.value; }
+    } else {
+      const v = +(parseFloat(el.value) * parseFloat(el.dataset.scale)).toFixed(4);
+      if (KF_CUT.includes(k)) { const n0 = kfCount(seg); setProp(seg, k, v, curTc()); if (kfCount(seg) !== n0) { renderTimeline(); kfUiRefresh(); } } else seg[k] = v;
+      el.parentElement.querySelector('output').textContent = el.value;
+    }
   });
   $('cutView').addEventListener('change', () => { armed = true; });
   $('cutView').addEventListener('click', (e) => {
     const b = e.target.closest('button'), seg = segs[playIdx];
     if (!b || !seg) return;
-    if (b.dataset.cvreset) { snapshot(); Object.assign(seg, { zoom: 1, px: 0, py: 0, flip: false }); }
+    if (b.dataset.kfa) return kfAction(seg, 'cut', b.dataset.kfk, b.dataset.kfa);
+    if (b.dataset.cvreset) {
+      snapshot(); Object.assign(seg, { zoom: 1, px: 0, py: 0, flip: false });
+      if (seg.kf) { for (const key of KF_CUT) delete seg.kf[key]; if (!Object.keys(seg.kf).length) delete seg.kf; renderTimeline(); }
+    }
     else if (b.dataset.cvact === 'crop') cropMode = !cropMode;
     else if (b.dataset.cvact === 'fit') { snapshot(); fitCrop(); }
     else if (b.dataset.cvact === 'uncrop') { snapshot(); delete seg.crop; cropLockKey = 'free'; }
@@ -1007,18 +1257,19 @@
 
   function renderEdit() {
     const p = $('panelEdit');
-    const o = selOv && ovOf(selOv);
+    const o0 = selOv && ovOf(selOv), o = o0 && resolveOv(o0, editTime());   // values as they are at the playhead
     if (!o) {
       p.innerHTML = '<p class="hint">미리보기나 타임라인에서 텍스트/이미지를 선택하면 여기서 편집할 수 있습니다.</p><div class="actions"><button class="btn" data-act="addText">T 텍스트 추가</button></div>';
       return;
     }
     const range = (k, label, min, max, step, val, scale) =>
-      `<div class="f"><label>${label}</label><div class="row"><input type="range" data-k="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div></div>`;
+      `<div class="f"><label>${label}${KF_OV.includes(k) ? kfCtl(k) : ''}</label><div class="row"><input type="range" data-k="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div></div>`;
     const color = (k, label, val) => `<div class="f"><label>${label}</label><div class="row"><input type="color" data-k="${k}" value="${val.slice(0, 7)}"></div></div>`;
     const times = `<div class="times">표시 구간 ${fmt(o.start)} – ${fmt(o.end)} (${(o.end - o.start).toFixed(1)}초)</div>`;
+    const posRows = range('x', '가로 위치', 0, 100, 1, Math.round(o.x * 100), 0.01) + range('y', '세로 위치', 0, 100, 1, Math.round(o.y * 100), 0.01);
     const acts = '<div class="actions"><button class="btn" data-act="center">가운데로</button><button class="btn" data-act="split">분할</button><button class="btn" data-act="dup">복제</button><button class="btn" data-act="del">삭제</button></div>';
     if (o.type === 'text') {
-      p.innerHTML = times +
+      p.innerHTML = times + posRows + kfEaseSel() +
         `<div class="f"><label>내용</label><textarea data-k="text" data-str="1"></textarea></div>` +
         `<div class="f"><div class="lbl">스타일</div><div class="chips">${Object.entries(TEXT_PRESETS).map(([k, s]) => `<button class="chip" data-preset="${k}">${s.name}</button>`).join('')}</div></div>` +
         `<div class="f"><label>굵기</label><select data-k="weight" data-num="1"><option value="400">보통</option><option value="700">굵게</option><option value="900">아주 굵게</option></select></div>` +
@@ -1036,15 +1287,18 @@
       p.querySelector('[data-k=bg]').checked = !!o.bg;
       p.querySelector('[data-k=shadow]').checked = !!o.shadow;
     } else {
-      p.innerHTML = times + `<div class="f"><div class="lbl">${imgs.get(o.imgId).name.replace(/</g, '&lt;')}</div></div>` +
+      p.innerHTML = times + `<div class="f"><div class="lbl">${imgs.get(o.imgId).name.replace(/</g, '&lt;')}</div></div>` + posRows + kfEaseSel() +
         range('w', '크기', 3, 200, 1, Math.round(o.w * 100), 0.01) +
         range('opacity', '투명도', 0, 100, 1, Math.round(o.opacity * 100), 0.01) +
         range('rot', '회전', -180, 180, 1, Math.round(o.rot), 1) + acts;
     }
+    p.querySelector('[data-kfease]').value = o.kfEase || 'ease';
+    kfUiRefresh();
   }
 
   $('panelEdit').addEventListener('input', (e) => {
     const el = e.target, k = el.dataset.k, o = selOv && ovOf(selOv);
+    if (o && 'kfease' in el.dataset) { snapshot(); if (el.value === 'ease') delete o.kfEase; else o.kfEase = el.value; return; }
     if (!k || !o) return;
     if (armed) { snapshot(); armed = false; }
     let val;
@@ -1052,12 +1306,14 @@
     else if (el.type === 'range') { val = parseFloat(el.value) * parseFloat(el.dataset.scale); const out = el.parentElement.querySelector('output'); if (out) out.textContent = el.value; }
     else if (el.dataset.num) val = parseInt(el.value, 10);
     else val = el.value;
-    o[k] = el.type === 'range' && k !== 'rot' ? +val.toFixed(4) : val;
+    const v = el.type === 'range' && k !== 'rot' ? +val.toFixed(4) : val;
+    if (KF_OV.includes(k)) { const n0 = kfCount(o); setProp(o, k, v, ovT(o)); if (kfCount(o) !== n0) { renderTimeline(); kfUiRefresh(); } } else o[k] = v;
     if (k === 'text') renderTimeline();
   });
   $('panelEdit').addEventListener('change', () => { armed = true; });
   $('panelEdit').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b || !selOv) { if (b && b.dataset.act === 'addText') addText(); return; }
+    if (b.dataset.kfa) return kfAction(ovOf(selOv), 'ov', b.dataset.kfk, b.dataset.kfa);
     if (b.dataset.preset) {
       const o = ovOf(selOv); snapshot();
       Object.assign(o, pick(TEXT_PRESETS[b.dataset.preset]), { y: o.y });
@@ -1065,8 +1321,85 @@
     } else if (b.dataset.act === 'del') removeOverlay(selOv);
     else if (b.dataset.act === 'dup') duplicateOverlay(selOv);
     else if (b.dataset.act === 'split') splitOverlay(selOv);
-    else if (b.dataset.act === 'center') { const o = ovOf(selOv); snapshot(); o.x = 0.5; o.y = 0.5; }
+    else if (b.dataset.act === 'center') { const o = ovOf(selOv), t = ovT(o), n0 = kfCount(o); snapshot(); setProp(o, 'x', 0.5, t); setProp(o, 'y', 0.5, t); if (kfCount(o) !== n0) renderTimeline(); kfUiRefresh(); }
   });
+
+  // ---------- keyframe actions / panel sync / timeline markers ----------
+  // ◆ toggles a keyframe at the playhead; ‹ › jump to the previous / next keyframe of that property
+  function kfAction(obj, kind, key, act) {
+    if (!obj || !key) return;
+    const base = kind === 'cut' ? offset(playIdx) : obj.start, t = kind === 'cut' ? curTc() : ovT(obj);
+    if (act === 'tog') {
+      snapshot();
+      toggleKf(obj, key, t, (kind === 'cut' ? resolveSeg(obj, t) : resolveOv(obj, editTime()))[key] ?? KF_DEFAULT[key] ?? 0);
+    } else {
+      const ts = ((obj.kf && obj.kf[key]) || []).map((k) => k.t);
+      const target = act === 'prev' ? Math.max(-1, ...ts.filter((x) => x < t - KF_EPS)) : Math.min(Infinity, ...ts.filter((x) => x > t + KF_EPS));
+      if (target >= 0 && isFinite(target)) seekEdit(base + target);
+    }
+    renderTimeline(); kfUiRefresh();
+  }
+  const KF_DEFAULT = { zoom: 1, px: 0, py: 0 };
+
+  // keeps the slider values and ◆ marks of the panels in step with the playhead
+  function kfUiRefresh() {
+    const sync = (box, obj, r, t, sel, keys) => {
+      if (!box || box.hidden || !obj) return;
+      box.querySelectorAll('[data-kfa=tog]').forEach((b) => {
+        const ks = (obj.kf && obj.kf[b.dataset.kfk]) || [];
+        b.classList.toggle('kf', ks.length > 0);
+        b.classList.toggle('on', ks.some((k) => Math.abs(k.t - t) < KF_EPS));
+      });
+      for (const key of keys) {
+        const el = box.querySelector(`input[type=range][${sel}="${key}"]`);
+        if (!el || document.activeElement === el || !(obj.kf && obj.kf[key])) continue;
+        const v = r[key] / parseFloat(el.dataset.scale);
+        el.value = parseFloat(el.step) < 1 ? +v.toFixed(1) : Math.round(v);
+        const out = el.parentElement.querySelector('output');
+        if (out) out.textContent = el.value;
+      }
+    };
+    const seg = segs[playIdx];
+    if (seg) { const tc = curTc(); sync($('cutView'), seg, resolveSeg(seg, tc), tc, 'data-cv', KF_CUT); }
+    const o = selOv && ovOf(selOv);
+    if (o) sync($('panelEdit'), o, resolveOv(o, editTime()), ovT(o), 'data-k', KF_OV);
+  }
+  let lastKfUi = 0;
+  const animated = (o) => o && o.kf && Object.keys(o.kf).length > 0;
+  function kfUiTick(now) {
+    if (now - lastKfUi < 60) return;
+    if (animated(segs[playIdx]) || (selOv && animated(ovOf(selOv)))) { lastKfUi = now; kfUiRefresh(); }
+  }
+
+  // drag a ◆ marker on the timeline: moves every keyframe of that clip at that time; a click just jumps there
+  function startKfDrag(e, km) {
+    e.preventDefault();
+    const cut = km.dataset.kind === 'cut', id = +km.dataset.id;
+    const obj = cut ? segs.find((x) => x.id === id) : ovOf(id);
+    if (!obj) return;
+    const base = () => (cut ? offset(segs.indexOf(obj)) : obj.start), limit = cut ? len(obj) : obj.end - obj.start;
+    let cur = +km.dataset.t, moved = false;
+    const x0 = e.clientX, t0 = cur;
+    const move = (ev) => {
+      if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+      if (!moved) { snapshot(); moved = true; }
+      const nt = +clamp(Math.round((t0 + (ev.clientX - x0) / pps) * FPS) / FPS, 0, limit).toFixed(3);
+      for (const ks of Object.values(obj.kf || {})) {
+        for (const k of ks) if (Math.abs(k.t - cur) < 1e-3) k.t = nt;
+        ks.sort((a, b) => a.t - b.t);
+        for (let i = ks.length - 1; i > 0; i--) if (Math.abs(ks[i].t - ks[i - 1].t) < 1e-3) ks.splice(i - 1, 1);   // two on the same time: keep one
+      }
+      cur = nt;
+      renderTimeline();
+    };
+    const up = () => {
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+      if (cut) { sel = segs.indexOf(obj); selOv = null; tab = 'cuts'; } else { selOv = id; tab = 'edit'; }
+      seekEdit(base() + cur);
+      render(); renderEdit();
+    };
+    addEventListener('pointermove', move); addEventListener('pointerup', up);
+  }
 
   // ---------- editing (cuts) ----------
   function selectCut(i, seek) {
@@ -1085,6 +1418,8 @@
     delete b.trans; delete b.intro;   // the second half continues the first one: no transition or start effect between
     const a = { ...seg, id: nextId++, start: seg.start, end: s };
     delete a.outro;   // the end effect stays with the part that ends the cut
+    const [kl, kr] = splitKf(seg.kf, s - seg.start);   // keyframes: both halves continue the value at the cut point
+    if (kl) { a.kf = kl; b.kf = kr; }
     segs.splice(playIdx, 1, a, b);
     sel = playIdx + 1; playIdx = sel;
     render();
@@ -1178,6 +1513,7 @@
     }
     updateTime();
     if (playIdx !== cutViewIdx) renderCutView();
+    kfUiTick(performance.now());
     drawPreview();
     requestAnimationFrame(tick);
   }
@@ -1214,6 +1550,8 @@
 
   scroller.addEventListener('pointerdown', (e) => {
     if (!loaded() || exporting) return;
+    const km = e.target.closest('.kfm');
+    if (km) return startKfDrag(e, km);
     const handle = e.target.closest('.handle');
     const block = e.target.closest('.block');
     const tm = e.target.closest('.trans');   // only its right handle is clickable: trims the previous cut
@@ -1417,9 +1755,9 @@
       if (td && dt < td) {   // inside a transition: the previous cut is drawn too, from its own element
         const ps = segs[i - 1], psrc = srcOf(ps), el = psrc.el === src.el ? altEl(psrc) : psrc.el;
         await seekTo(el, Math.min(ps.end - td + dt, ps.end - 0.001));
-        o = { el, w: psrc.w, h: psrc.h, seg: ps }; tr = { type: seg.trans.type, p: dt / td };
+        o = { el, w: psrc.w, h: psrc.h, seg: ps, tc: len(ps) - td + dt }; tr = { type: seg.trans.type, p: dt / td };
       }
-      drawScene(ctx, W, H, t, { el: src.el, w: src.w, h: src.h, seg }, o, tr, false, fxFor(i, t));
+      drawScene(ctx, W, H, t, { el: src.el, w: src.w, h: src.h, seg, tc: dt }, o, tr, false, fxFor(i, t));
       const frame = new VideoFrame(cv, { timestamp: Math.round(done * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
       venc.encode(frame, { keyFrame: done % 60 === 0 });
       frame.close();
@@ -1470,12 +1808,12 @@
   const kvSet = (k, val) => kv('readwrite', (s) => s.put(val, k));
   const kvDel = (k) => kv('readwrite', (s) => s.delete(k));
 
-  // saved projects (and autosaves) only list the videos / images the final cuts and overlays actually use
+  // saved projects (and autosaves) keep the whole source list (so unused parts can be brought back); only pictures no overlay uses are left out
   function serialize() {
-    const usedSrc = new Set(segs.map((sg) => sg.src)), usedImg = new Set(overlays.filter((o) => o.type === 'image').map((o) => o.imgId));
+    const usedImg = new Set(overlays.filter((o) => o.type === 'image').map((o) => o.imgId));
     return {
       v: 1, ratioKey, fitMode, nextId, segs, overlays,
-      sources: sources.filter((s) => usedSrc.has(s.id)).map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
+      sources: sources.filter((s) => !s.removed).map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
       imgs: [...imgs].filter(([id]) => usedImg.has(id)).map(([id, im]) => ({ id, name: im.name, dataUrl: im.dataUrl })),
     };
   }
@@ -1492,6 +1830,7 @@
   function cleanSeg(sg) {
     const o = { ...sg }, t = o.trans, c = o.crop;
     if (t && TRANS_TYPES.has(t.type) && t.type !== 'none') o.trans = { type: t.type, dur: clamp(+t.dur || 0.5, 0.1, 3) }; else delete o.trans;
+    cleanKf(o, KF_CUT);
     if (+o.fadeOut > 0 && !o.outro) o.outro = { type: 'fade', dur: o.fadeOut };   // projects saved with the first fade-out version
     delete o.fadeOut;
     for (const k of ['intro', 'outro']) {
@@ -1515,6 +1854,7 @@
     }
     segs = p.segs.filter((sg) => sources.some((x) => x.id === sg.src)).map(cleanSeg);
     overlays = (p.overlays || []).filter((o) => o.type === 'text' || imgs.has(o.imgId));
+    overlays.forEach((o) => cleanKf(o, KF_OV));
     nextId = Math.max(p.nextId || 1, ...segs.map((x) => x.id + 1), ...overlays.map((o) => o.id + 1), ...sources.map((x) => x.id + 1), ...[...imgs.keys()].map((k) => k + 1));
     if (!segs.length) throw new Error('프로젝트에 컷이 없습니다.');
     activate(srcOf(segs[0]));
@@ -1591,6 +1931,7 @@
   $('addText').onclick = () => addText();
   $('saveProj').onclick = saveProjectFile;
   $('projFile').onchange = (e) => { openProjectFile(e.target.files[0]); e.target.value = ''; };
+  $('tabSources').onclick = () => { tab = 'sources'; renderTabs(); };
   $('tabCuts').onclick = () => { tab = 'cuts'; renderTabs(); };
   $('tabEdit').onclick = () => { tab = 'edit'; renderTabs(); renderEdit(); };
   $('ratio').onchange = (e) => { ratioKey = e.target.value; setupCanvas(); };
@@ -1614,7 +1955,8 @@
   window.__editor = {
     get segs() { return segs; }, get sources() { return sources; }, get overlays() { return overlays; }, get playIdx() { return playIdx; }, get view() { return view; },
     split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles, addImages, addText, undo, total, offset, tdur, drawScene, cropOf,
-    serialize, setIO(i, which, type, dur = 0.7) { segs[i][which] = { type, dur }; renderTimeline(); }, ioDurs, fxFor,
+    serialize, addCutFromSource, resolveSeg, resolveOv, kfAction, splitKf, kfSample, removeSource, selectRange(id, a, b) { srcSel = { id, a, b }; renderSources(); }, get srcSel() { return srcSel; },
+    setIO(i, which, type, dur = 0.7) { segs[i][which] = { type, dur }; renderTimeline(); }, ioDurs, fxFor,
     setTrans(i, type, dur = 0.5) { segs[i].trans = { type, dur }; renderTimeline(); }, setCrop(i, c) { setCrop(segs[i], c); }, exportVideo,
     setRatio(k) { $('ratio').value = k; ratioKey = k; setupCanvas(); }, setFit(k) { $('fit').value = k; fitMode = k; },
   };

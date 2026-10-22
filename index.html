@@ -12,6 +12,7 @@
   <div class="spacer"></div>
   <label class="btn tool" for="file" title="영상 추가"><b>🎞</b><span>영상 추가</span></label>
   <input id="file" type="file" accept="video/*" multiple hidden>
+  <input id="relinkFile" type="file" accept="video/*" hidden>
   <button id="addText" class="btn tool" disabled title="텍스트 추가"><b>T</b><span>텍스트</span></button>
   <label class="btn tool" id="addImageLbl" for="imgFile" title="이미지 추가"><b>🖼</b><span>이미지</span></label>
   <input id="imgFile" type="file" accept="image/*" multiple hidden>
@@ -68,12 +69,14 @@
 
   <aside class="side">
     <div class="tabs">
+      <button id="tabSources">소스</button>
       <button id="tabCuts" class="on">컷 목록</button>
       <button id="tabEdit">편집</button>
     </div>
+    <div id="panelSources" class="panel" hidden></div>
     <div id="panelCuts" class="panel">
       <ol id="cutList"></ol>
-      <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생<br>영상을 추가하면 타임라인 맨 뒤에 붙습니다. ↑↓로 순서를 바꾸세요.</p>
+      <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생<br>영상을 추가하면 타임라인 맨 뒤에 붙습니다. ↑↓로 순서를 바꾸세요.<br>컷으로 쓰지 않은 부분은 [소스] 탭에서 골라 다시 컷으로 추가할 수 있습니다.</p>
       <div id="cutView" class="cutview"></div>
     </div>
     <div id="panelEdit" class="panel" hidden></div>
