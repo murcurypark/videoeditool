@@ -19,7 +19,7 @@
 
 ## GitHub Pages 배포 (1회 설정)
 1. 저장소 **Settings → Pages → Source** 를 **GitHub Actions** 로 선택
-2. `main`(또는 기본) 브랜치에 푸시되면 자동 배포됩니다 → `https://<계정>.github.io/videoeditool/`
+2. `main` 브랜치에 푸시되면 자동 배포됩니다 → `https://<계정>.github.io/videoeditool/`
 
 ## 한계
 - 내보내기는 30fps, 원본 해상도(짝수로 보정)로 재인코딩합니다. 영상은 H.264(미지원 시 VP9), 오디오는 AAC(미지원 시 Opus)입니다.
