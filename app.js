@@ -34,6 +34,12 @@
     ['slideL', '밀기 ←'], ['slideR', '밀기 →'], ['slideU', '밀기 ↑'], ['slideD', '밀기 ↓'],
     ['wipeL', '와이프 ←'], ['wipeR', '와이프 →'], ['wipeU', '와이프 ↑'], ['wipeD', '와이프 ↓'], ['zoom', '줌 전환']];
   const TRANS_TYPES = new Set(TRANS.map((t) => t[0]));
+  // start / end effects of a cut (against a black or white background instead of a neighbouring cut)
+  const IO = [['none', '없음'], ['fade', '검정 페이드'], ['fadeW', '흰색 페이드'],
+    ['slideL', '밀기 ←'], ['slideR', '밀기 →'], ['slideU', '밀기 ↑'], ['slideD', '밀기 ↓'],
+    ['wipeL', '와이프 ←'], ['wipeR', '와이프 →'], ['wipeU', '와이프 ↑'], ['wipeD', '와이프 ↓'], ['zoom', '줌']];
+  const IO_TYPES = new Set(IO.map((t) => t[0]));
+  const ioDefault = { type: 'none', dur: 0.7 };
   const CROP_AR = [['free', '자유'], ['orig', '원본 비율'], ['out', '출력 화면 비율'], ['16:9', '16:9'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:5', '4:5']];
 
   const fmt = (t) => {
@@ -51,23 +57,27 @@
   };
   const offset = (i) => { let t = 0; for (let j = 0; j < i; j++) t += len(segs[j]) - tdur(j + 1); return t; };
   const total = () => (segs.length ? offset(segs.length - 1) + len(segs[segs.length - 1]) : 0);
-  // per-cut fade to black at the cut's end (picture + sound); skipped when a transition follows, which already handles the exit
-  const fdur = (i) => {
-    const sg = segs[i], d = sg && sg.fadeOut;
-    if (!d || tdur(i + 1)) return 0;
-    const m = Math.min(d, len(sg) - tdur(i));
-    return m >= 0.05 ? m : 0;
+  // start (intro) / end (outro) effect of a cut. They give way to a transition on that side, which already handles it,
+  // and are scaled down together if they don't both fit in the cut. Returns [introSeconds, outroSeconds].
+  const ioDurs = (i) => {
+    const sg = segs[i];
+    if (!sg) return [0, 0];
+    const ok = (x) => x && IO_TYPES.has(x.type) && x.type !== 'none' && +x.dur > 0;
+    let din = ok(sg.intro) && !tdur(i) ? +sg.intro.dur : 0, dout = ok(sg.outro) && !tdur(i + 1) ? +sg.outro.dur : 0;
+    const avail = len(sg) - tdur(i) - tdur(i + 1);
+    if (din + dout > avail) { const k = Math.max(avail, 0) / (din + dout); din *= k; dout *= k; }
+    return [din >= 0.05 ? din : 0, dout >= 0.05 ? dout : 0];
   };
-  const fadeAlpha = (t) => {
-    let a = 0;
-    for (let i = 0; i < segs.length; i++) {
-      const f = fdur(i);
-      if (!f) continue;
-      const end = offset(i) + len(segs[i]);
-      if (t > end - f && t < end) a = Math.max(a, (t - (end - f)) / f);
-    }
-    return clamp(a, 0, 1);
+  // the effect running on cut i at timeline time t: {type, p (0..1), out}
+  const fxFor = (i, t) => {
+    const sg = segs[i];
+    if (!sg) return null;
+    const [din, dout] = ioDurs(i), a = offset(i), z = a + len(sg);
+    if (din && t < a + din) return { type: sg.intro.type, p: clamp((t - a) / din, 0, 1), out: false };
+    if (dout && t > z - dout) return { type: sg.outro.type, p: clamp((t - (z - dout)) / dout, 0, 1), out: true };
+    return null;
   };
+  const fxGain = (i, t) => { const f = fxFor(i, t); return f ? (f.out ? 1 - f.p : f.p) : 1; };   // sound follows the picture
   const cutAt = (t) => { let i = 0; while (i < segs.length - 1 && offset(i + 1) <= t) i++; return i; };
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -379,7 +389,8 @@
   }
   // L = {el, w, h, seg}; mode: undefined = black background + cropped video, 'nobg' = no background, 'faint' = whole uncropped video, dimmed
   function drawLayer(ctx, cw, ch, L, mode) {
-    if (!mode) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch); }
+    if (!mode) { ctx.fillStyle = (L && L.bg) || '#000'; ctx.fillRect(0, 0, cw, ch); }
+    if (L && L.cv) { ctx.drawImage(L.cv, 0, 0, cw, ch); return; }
     if (!L || !L.el || !L.w) return;
     const g = geom(cw, ch, L), c = mode === 'faint' ? FULL : cropOf(L.seg);
     ctx.save();
@@ -446,17 +457,35 @@
   // handles shown on the selected cut: bottom-right corner scales; in crop mode all edges (only corners while a ratio is locked)
   const cutHandles = () => (!cropMode ? [[1, 1]] : cropLockKey !== 'free' ? CROP_HANDLES.filter(([x, y]) => x && y) : CROP_HANDLES);
 
-  // draws one frame of the project at timeline time t: main layer (+ outgoing layer `o` while transition `tr` plays) + overlays
-  function drawScene(ctx, cw, ch, t, main, o, tr, ui) {
-    if (o && tr) drawTransition(ctx, cw, ch, o, main, tr.type, tr.p);
+  // draws one frame of the project at timeline time t: main layer (+ outgoing layer `o` while transition `tr` plays) + overlays.
+  // `fx` = start/end effect of the cut: the whole frame (picture + text/images) is composed first, then faded/slid/wiped against a blank background.
+  let frameCv = null;
+  function drawScene(ctx, cw, ch, t, main, o, tr, ui, fx) {
+    const base = (c) => {
+      if (o && tr) drawTransition(c, cw, ch, o, main, tr.type, tr.p);
+      else {
+        c.fillStyle = '#000'; c.fillRect(0, 0, cw, ch);
+        if (ui && cropMode) drawLayer(c, cw, ch, main, 'faint');
+        drawLayer(c, cw, ch, main, 'nobg');
+      }
+      for (const ov of drawOrder(activeOverlays(t))) drawOverlay(c, ov, cw, ch);
+    };
+    if (!fx) base(ctx);
     else {
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
-      if (ui && cropMode) drawLayer(ctx, cw, ch, main, 'faint');
-      drawLayer(ctx, cw, ch, main, 'nobg');
+      if (!frameCv) frameCv = document.createElement('canvas');
+      if (frameCv.width !== cw || frameCv.height !== ch) { frameCv.width = cw; frameCv.height = ch; }
+      base(frameCv.getContext('2d'));
+      const bg = fx.type === 'fadeW' ? '#fff' : '#000', frame = { cv: frameCv }, blank = { bg };
+      if (fx.type === 'zoom') {   // the frame scales while it fades
+        const p = ease(fx.p), k = fx.out ? 1 + p * 0.3 : 1.3 - p * 0.3;
+        ctx.fillStyle = bg; ctx.fillRect(0, 0, cw, ch);
+        ctx.save(); ctx.globalAlpha = fx.out ? 1 - p : p; ctx.translate(cw / 2, ch / 2); ctx.scale(k, k); ctx.translate(-cw / 2, -ch / 2);
+        ctx.drawImage(frameCv, 0, 0); ctx.restore();
+      } else {
+        const A = fx.out ? frame : blank, B = fx.out ? blank : frame;
+        drawTransition(ctx, cw, ch, A, B, fx.type === 'fadeW' ? 'fade' : fx.type, fx.p);
+      }
     }
-    for (const ov of drawOrder(activeOverlays(t))) drawOverlay(ctx, ov, cw, ch);
-    const fa = fadeAlpha(t);
-    if (fa > 0) { ctx.save(); ctx.globalAlpha = fa; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch); ctx.restore(); }
     if (ui && selOv) { const ov = ovOf(selOv); if (ov && t >= ov.start && t < ov.end) drawSelection(ctx, ov, cw, ch); }
     else if (ui && main && main.el) drawCutBox(ctx, cw, ch, main);
   }
@@ -488,9 +517,9 @@
     const seg = segs[playIdx], src = srcOf(seg), main = mainLayer();
     let o = null, tr = null;
     const so = exporting ? null : syncOut();
-    if (!exporting && !so) v.volume = 1 - fadeAlpha(editTime());
+    if (!exporting && !so) v.volume = fxGain(playIdx, editTime());
     if (so) { const ps = srcOf(so.seg); o = { el: so.el, w: ps.w, h: ps.h, seg: so.seg }; tr = { type: seg.trans.type, p: so.p }; }
-    drawScene(vctx, view.width, view.height, editTime(), main, o, tr, !exporting);
+    drawScene(vctx, view.width, view.height, editTime(), main, o, tr, !exporting, fxFor(playIdx, editTime()));
     if (src.missing) {
       vctx.save(); vctx.fillStyle = 'rgba(255,255,255,.85)'; vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
       vctx.font = `700 ${view.width * 0.04}px ${FONT}`;
@@ -747,15 +776,17 @@
       m.innerHTML = '<span>⇄</span><i class="handle r"></i>';
       track.appendChild(m);
     });
-    segs.forEach((seg, i) => {   // fade-out zones at the end of a cut
-      const f = fdur(i);
-      if (!f) return;
-      const m = document.createElement('div');
-      m.className = 'fadeout';
-      m.style.left = (offset(i) + len(seg) - f) * pps + 'px';
-      m.style.width = Math.max(f * pps, 6) + 'px';
-      m.title = '끝 페이드 아웃 ' + f.toFixed(1) + '초';
-      track.appendChild(m);
+    segs.forEach((seg, i) => {   // start / end effect zones of a cut
+      const [din, dout] = ioDurs(i), name = (x) => IO.find((t) => t[0] === x.type)[1];
+      for (const [d, cls, at, x] of [[din, 'fadein', offset(i), seg.intro], [dout, 'fadeout', offset(i) + len(seg) - dout, seg.outro]]) {
+        if (!d) continue;
+        const m = document.createElement('div');
+        m.className = cls;
+        m.style.left = at * pps + 'px';
+        m.style.width = Math.max(d * pps, 6) + 'px';
+        m.title = (cls === 'fadein' ? '시작 효과: ' : '끝 효과: ') + name(x) + ' ' + d.toFixed(1) + '초';
+        track.appendChild(m);
+      }
     });
     // overlay lanes
     const lanes = assignLanes();
@@ -896,11 +927,16 @@
       `<div class="f"><label>길이</label><div class="row"><input type="range" data-tr="dur" min="1" max="30" step="1" value="${Math.round(tr.dur * 10)}"><output>${tr.dur.toFixed(1)}초</output></div></div>` +
       `<div class="actions"><button class="btn" data-cvact="trall">모든 컷 사이에 적용</button></div>` +
       `<p class="hint">전환 구간만큼 두 컷이 겹쳐 전체 길이가 짧아집니다.${playIdx && tr.type !== 'none' && eff < tr.dur - 0.01 ? ` 이 컷은 짧아서 실제로는 ${eff.toFixed(2)}초 적용됩니다.` : ''}</p>`;
-    const fo = seg.fadeOut || 0, nextTr = tdur(playIdx + 1) > 0;
-    box.insertAdjacentHTML('beforeend',
-      `<h3>컷 ${playIdx + 1} 끝 페이드 아웃</h3><div class="f"><label>검정으로 사라지기</label><div class="row"><input type="range" data-fo min="0" max="50" step="1" value="${Math.round(fo * 10)}"><output>${fo ? fo.toFixed(1) + '초' : '없음'}</output></div></div>` +
-      `<div class="actions"><button class="btn" data-cvact="foall">모든 컷 끝에 적용</button></div>` +
-      `<p class="hint">이 컷의 끝에서 화면(텍스트/이미지 포함)과 소리가 함께 검정으로 사라집니다. 0이면 사용하지 않습니다.${fo && nextTr ? ' 다음 컷에 전환이 있어 지금은 적용되지 않습니다.' : ''}</p>`);
+    const ioBox = (which, title, skipped) => {
+      const x = seg[which] || ioDefault;
+      return `<h3>컷 ${playIdx + 1} ${title}</h3>` +
+        `<div class="f"><label>효과</label><select data-io="${which}" data-iof="type">${IO.map(([k, n]) => `<option value="${k}"${k === x.type ? ' selected' : ''}>${n}</option>`).join('')}</select></div>` +
+        `<div class="f"><label>길이</label><div class="row"><input type="range" data-io="${which}" data-iof="dur" min="1" max="40" step="1" value="${Math.round(x.dur * 10)}"${x.type === 'none' ? ' disabled' : ''}><output>${x.dur.toFixed(1)}초</output></div></div>` +
+        `<div class="actions"><button class="btn" data-cvact="ioall-${which}">모든 컷 ${which === 'intro' ? '시작' : '끝'}에 적용</button></div>` +
+        (x.type !== 'none' && skipped ? `<p class="hint">${which === 'intro' ? '앞 컷과의 전환' : '다음 컷과의 전환'}이 있어 이 효과는 적용되지 않습니다.</p>` : '');
+    };
+    box.insertAdjacentHTML('beforeend', ioBox('intro', '시작 효과', playIdx > 0 && tdur(playIdx) > 0) + ioBox('outro', '끝 효과', tdur(playIdx + 1) > 0) +
+      `<p class="hint">시작·끝 효과는 화면(텍스트/이미지 포함)과 소리에 함께 적용됩니다. 영상 처음이나 끝처럼 이어지는 컷이 없을 때 쓰세요.</p>`);
     box.querySelector('[data-cv=flip]').checked = !!seg.flip;
     box.querySelector('[data-cropar]').value = cropLockKey;
     box.querySelector('[data-tr=type]').value = tr.type;
@@ -918,11 +954,13 @@
       renderTimeline();
       return;
     }
-    if ('fo' in el.dataset) {
+    if ('io' in el.dataset) {
       if (armed) { snapshot(); armed = false; }
-      const f = +el.value / 10;
-      if (f) seg.fadeOut = f; else delete seg.fadeOut;
-      el.parentElement.querySelector('output').textContent = f ? f.toFixed(1) + '초' : '없음';
+      const which = el.dataset.io, cur = seg[which] || ioDefault, isType = el.dataset.iof === 'type';
+      const next = isType ? { ...cur, type: el.value } : { ...cur, dur: +el.value / 10 };
+      if (!isType) el.parentElement.querySelector('output').textContent = next.dur.toFixed(1) + '초';
+      else box.querySelector(`[data-io=${which}][data-iof=dur]`).disabled = next.type === 'none';
+      if (next.type === 'none') delete seg[which]; else seg[which] = next;
       renderTimeline();
       return;
     }
@@ -949,9 +987,10 @@
     else if (b.dataset.cvact === 'crop') cropMode = !cropMode;
     else if (b.dataset.cvact === 'fit') { snapshot(); fitCrop(); }
     else if (b.dataset.cvact === 'uncrop') { snapshot(); delete seg.crop; cropLockKey = 'free'; }
-    else if (b.dataset.cvact === 'foall') {
+    else if ((b.dataset.cvact || '').startsWith('ioall-')) {
+      const which = b.dataset.cvact.slice(6), cur = seg[which];
       snapshot();
-      segs.forEach((sg) => { if (seg.fadeOut) sg.fadeOut = seg.fadeOut; else delete sg.fadeOut; });
+      segs.forEach((sg) => { if (cur) sg[which] = { ...cur }; else delete sg[which]; });
       renderTimeline();
     } else if (b.dataset.cvact === 'trall') {
       snapshot();
@@ -1042,9 +1081,9 @@
     if (s - seg.start < MIN_LEN || seg.end - s < MIN_LEN) return;
     snapshot();
     const b = { ...seg, id: nextId++, start: s, end: seg.end };
-    delete b.trans;   // the second half continues the first one, no transition between
+    delete b.trans; delete b.intro;   // the second half continues the first one: no transition or start effect between
     const a = { ...seg, id: nextId++, start: seg.start, end: s };
-    delete a.fadeOut;   // the fade-out stays with the part that ends the cut
+    delete a.outro;   // the end effect stays with the part that ends the cut
     segs.splice(playIdx, 1, a, b);
     sel = playIdx + 1; playIdx = sel;
     render();
@@ -1340,12 +1379,13 @@
         const buf = bufs.get(sg.src);
         if (!buf) return;
         const o = Math.round(offset(i) * ac.sr), a = Math.floor(sg.start * ac.sr), full = Math.floor(len(sg) * ac.sr);
-        const L = Math.min(full, n - o), hin = Math.floor(tdur(i) * ac.sr), hout = Math.floor(tdur(i + 1) * ac.sr), fo = Math.floor(fdur(i) * ac.sr);
+        const L = Math.min(full, n - o), hin = Math.floor(tdur(i) * ac.sr), hout = Math.floor(tdur(i + 1) * ac.sr), [din, dout] = ioDurs(i), fi = Math.floor(din * ac.sr), fo = Math.floor(dout * ac.sr);
         for (let c = 0; c < 2; c++) {
           const d = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1)), f = flat[c];
           for (let j = 0; j < L; j++) {
             let g = j < hin ? Math.sin(j / hin * Math.PI / 2) : j >= full - hout ? Math.cos((j - (full - hout)) / hout * Math.PI / 2) : 1;
-            if (fo && j >= full - fo) g *= 1 - (j - (full - fo)) / fo;   // fade-out to black: sound matches the picture
+            if (fi && j < fi) g *= j / fi;   // start / end effect: the sound follows the picture
+            if (fo && j >= full - fo) g *= 1 - (j - (full - fo)) / fo;
             f[o + j] += (d[a + j] || 0) * g;
           }
         }
@@ -1378,7 +1418,7 @@
         await seekTo(el, Math.min(ps.end - td + dt, ps.end - 0.001));
         o = { el, w: psrc.w, h: psrc.h, seg: ps }; tr = { type: seg.trans.type, p: dt / td };
       }
-      drawScene(ctx, W, H, t, { el: src.el, w: src.w, h: src.h, seg }, o, tr, false);
+      drawScene(ctx, W, H, t, { el: src.el, w: src.w, h: src.h, seg }, o, tr, false, fxFor(i, t));
       const frame = new VideoFrame(cv, { timestamp: Math.round(done * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
       venc.encode(frame, { keyFrame: done % 60 === 0 });
       frame.close();
@@ -1429,11 +1469,13 @@
   const kvSet = (k, val) => kv('readwrite', (s) => s.put(val, k));
   const kvDel = (k) => kv('readwrite', (s) => s.delete(k));
 
+  // saved projects (and autosaves) only list the videos / images the final cuts and overlays actually use
   function serialize() {
+    const usedSrc = new Set(segs.map((sg) => sg.src)), usedImg = new Set(overlays.filter((o) => o.type === 'image').map((o) => o.imgId));
     return {
       v: 1, ratioKey, fitMode, nextId, segs, overlays,
-      sources: sources.map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
-      imgs: [...imgs].map(([id, im]) => ({ id, name: im.name, dataUrl: im.dataUrl })),
+      sources: sources.filter((s) => usedSrc.has(s.id)).map((s) => ({ id: s.id, name: s.name, size: s.size, lastModified: s.lastModified, duration: s.duration, w: s.w, h: s.h, hue: s.hue })),
+      imgs: [...imgs].filter(([id]) => usedImg.has(id)).map(([id, im]) => ({ id, name: im.name, dataUrl: im.dataUrl })),
     };
   }
 
@@ -1449,7 +1491,12 @@
   function cleanSeg(sg) {
     const o = { ...sg }, t = o.trans, c = o.crop;
     if (t && TRANS_TYPES.has(t.type) && t.type !== 'none') o.trans = { type: t.type, dur: clamp(+t.dur || 0.5, 0.1, 3) }; else delete o.trans;
-    if (+o.fadeOut > 0) o.fadeOut = clamp(+o.fadeOut, 0.1, 5); else delete o.fadeOut;
+    if (+o.fadeOut > 0 && !o.outro) o.outro = { type: 'fade', dur: o.fadeOut };   // projects saved with the first fade-out version
+    delete o.fadeOut;
+    for (const k of ['intro', 'outro']) {
+      const x = o[k];
+      if (x && IO_TYPES.has(x.type) && x.type !== 'none') o[k] = { type: x.type, dur: clamp(+x.dur || 0.7, 0.1, 4) }; else delete o[k];
+    }
     if (c && [c.x, c.y, c.w, c.h].every(Number.isFinite) && c.x >= 0 && c.y >= 0 && c.w > 0.01 && c.h > 0.01 && c.x + c.w <= 1.0001 && c.y + c.h <= 1.0001) o.crop = { x: c.x, y: c.y, w: c.w, h: c.h }; else delete o.crop;
     return o;
   }
@@ -1566,7 +1613,7 @@
   window.__editor = {
     get segs() { return segs; }, get sources() { return sources; }, get overlays() { return overlays; }, get playIdx() { return playIdx; }, get view() { return view; },
     split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles, addImages, addText, undo, total, offset, tdur, drawScene, cropOf,
-    setFade(i, f) { segs[i].fadeOut = f; renderTimeline(); }, fadeAlpha, fdur,
+    serialize, setIO(i, which, type, dur = 0.7) { segs[i][which] = { type, dur }; renderTimeline(); }, ioDurs, fxFor,
     setTrans(i, type, dur = 0.5) { segs[i].trans = { type, dur }; renderTimeline(); }, setCrop(i, c) { setCrop(segs[i], c); }, exportVideo,
     setRatio(k) { $('ratio').value = k; ratioKey = k; setupCanvas(); }, setFit(k) { $('fit').value = k; fitMode = k; },
   };
