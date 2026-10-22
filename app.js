@@ -1508,9 +1508,8 @@
     ratioKey = RATIOS[p.ratioKey] || p.ratioKey === 'orig' ? p.ratioKey : 'orig';
     fitMode = p.fitMode === 'cover' ? 'cover' : 'contain';
     $('ratio').value = ratioKey; $('fit').value = fitMode;
-    const usedSrc = new Set(p.segs.map((sg) => sg.src)), usedImg = new Set((p.overlays || []).filter((o) => o.type === 'image').map((o) => o.imgId));
-    for (const s of p.sources) if (usedSrc.has(s.id)) sources.push({ ...s, file: null, url: null, el: makeVideoEl(), thumbs: [], audio: undefined, missing: true });
-    for (const im of (p.imgs || []).filter((x) => usedImg.has(x.id))) {
+    for (const s of p.sources) sources.push({ ...s, file: null, url: null, el: makeVideoEl(), thumbs: [], audio: undefined, missing: true });
+    for (const im of p.imgs || []) {
       const el = new Image(); el.src = im.dataUrl;
       try { await el.decode(); imgs.set(im.id, { el, w: el.naturalWidth || 400, h: el.naturalHeight || 400, name: im.name, dataUrl: im.dataUrl }); } catch (e) { /* skip broken image */ }
     }
