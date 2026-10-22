@@ -113,3 +113,12 @@ video { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events:
 .restore[hidden] { display: none; }
 .panel li.relink small { display: block; white-space: normal; }
 .panel li.relink button { background: #2a2f38; border: 1px solid var(--line); border-radius: 6px; color: var(--fg); padding: 3px 8px; white-space: nowrap; }
+
+/* transition zone on the cut track (the two cuts overlap here); only its right handle (trims the previous cut) takes clicks */
+.trans { position: absolute; top: 0; height: 60px; z-index: 2; pointer-events: none; border-radius: 6px; border: 1px solid rgba(255,255,255,.7);
+  background: repeating-linear-gradient(135deg, rgba(255,255,255,.34) 0 5px, rgba(255,255,255,.1) 5px 10px); }
+.trans span { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 13px; text-shadow: 0 0 3px #000; }
+.trans .handle { pointer-events: auto; }
+.cutview .actions { margin-bottom: 10px; }
+.cutview select { width: 100%; }
+.cutview .f output { width: 40px; }

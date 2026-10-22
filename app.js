@@ -26,14 +26,32 @@
   let guides = { x: false, y: false };
   const pending = [];     // files being loaded / failed to load, shown in the cut list
   let prepped = -1;       // index of the cut whose video was pre-seeked
+  let out = null;         // {el, idx}: element showing the outgoing cut while a transition plays
+  let cropMode = false;   // crop handles shown on the preview
+  let cropLockKey = 'free'; // aspect lock while dragging crop corners
+  const transDefault = { type: 'fade', dur: 0.5 };   // shown on cut 1, applied to all cuts by [모든 컷 사이에 적용]
+  const TRANS = [['none', '없음'], ['fade', '크로스페이드'], ['dipB', '검정으로 페이드'], ['dipW', '흰색으로 페이드'],
+    ['slideL', '밀기 ←'], ['slideR', '밀기 →'], ['slideU', '밀기 ↑'], ['slideD', '밀기 ↓'],
+    ['wipeL', '와이프 ←'], ['wipeR', '와이프 →'], ['wipeU', '와이프 ↑'], ['wipeD', '와이프 ↓'], ['zoom', '줌 전환']];
+  const TRANS_TYPES = new Set(TRANS.map((t) => t[0]));
+  const CROP_AR = [['free', '자유'], ['orig', '원본 비율'], ['out', '출력 화면 비율'], ['16:9', '16:9'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:5', '4:5']];
 
   const fmt = (t) => {
     t = Math.max(0, t || 0);
     const m = Math.floor(t / 60), s = t - m * 60;
     return String(m).padStart(2, '0') + ':' + s.toFixed(2).padStart(5, '0');
   };
-  const total = () => segs.reduce((a, s) => a + (s.end - s.start), 0);
-  const offset = (i) => segs.slice(0, i).reduce((a, s) => a + (s.end - s.start), 0);
+  const len = (s) => s.end - s.start;
+  // a cut's transition (from the previous cut) overlaps both cuts; each side gives at most half its length
+  const tdur = (i) => {
+    const tr = i > 0 && segs[i] && segs[i].trans;
+    if (!tr || !TRANS_TYPES.has(tr.type) || tr.type === 'none') return 0;
+    const d = Math.min(+tr.dur || 0, len(segs[i - 1]) / 2, len(segs[i]) / 2);
+    return d >= 0.05 ? d : 0;
+  };
+  const offset = (i) => { let t = 0; for (let j = 0; j < i; j++) t += len(segs[j]) - tdur(j + 1); return t; };
+  const total = () => (segs.length ? offset(segs.length - 1) + len(segs[segs.length - 1]) : 0);
+  const cutAt = (t) => { let i = 0; while (i < segs.length - 1 && offset(i + 1) <= t) i++; return i; };
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const loaded = () => segs.length > 0;
@@ -108,6 +126,9 @@
     return el;
   }
 
+  // second <video> of a source: needed when a transition shows two cuts of the same source at once
+  const altEl = (src) => src.alt || (src.alt = (() => { const el = makeVideoEl(); el.src = src.url; return el; })());
+
   function enableUI() {
     $('empty').hidden = true;
     for (const id of ['play', 'modeAll', 'modeCut', 'split', 'del', 'export', 'addText', 'saveProj']) $(id).disabled = false;
@@ -135,6 +156,7 @@
     if (target) {   // relink a saved source to this file
       const oldEl = target.el, wasActive = v === oldEl;
       oldEl.remove();
+      if (target.alt) { target.alt.remove(); target.alt = null; }
       Object.assign(target, { el, file, url: el.src, size: file.size, lastModified: file.lastModified, duration: el.duration, w: el.videoWidth, h: el.videoHeight, thumbs: [], audio: undefined, missing: false });
       for (const sg of segs) if (sg.src === target.id) { sg.end = Math.min(sg.end, target.duration); sg.start = Math.min(sg.start, sg.end - MIN_LEN); }
       if (wasActive) { activate(target); el.currentTime = segs[playIdx] ? segs[playIdx].start : 0; }
@@ -329,28 +351,126 @@
     ctx.stroke(); ctx.restore();
   }
 
-  // draws one frame of the project: video (fit / cover) + overlays at timeline time t
-  function drawScene(ctx, cw, ch, t, el, srcW, srcH, ui, seg) {
+  // ---------- drawing: video layer (crop + fit + zoom/pan/flip), transitions, overlays ----------
+  const FULL = { x: 0, y: 0, w: 1, h: 1 };
+  const cropOf = (seg) => (seg && seg.crop) || FULL;
+  const CROP_HANDLES = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+  function geom(cw, ch, L) {
+    const s = L.seg || {}, z = s.zoom || 1;
+    const sc = (fitMode === 'cover' ? Math.max(cw / L.w, ch / L.h) : Math.min(cw / L.w, ch / L.h)) * z;
+    return { dw: L.w * sc, dh: L.h * sc, cx: cw / 2 + (s.px || 0) * cw, cy: ch / 2 + (s.py || 0) * ch, f: s.flip ? -1 : 1 };
+  }
+  // L = {el, w, h, seg}; mode: undefined = black background + cropped video, 'nobg' = no background, 'faint' = whole uncropped video, dimmed
+  function drawLayer(ctx, cw, ch, L, mode) {
+    if (!mode) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch); }
+    if (!L || !L.el || !L.w) return;
+    const g = geom(cw, ch, L), c = mode === 'faint' ? FULL : cropOf(L.seg);
+    ctx.save();
+    if (mode === 'faint') ctx.globalAlpha = 0.3;
+    ctx.translate(g.cx, g.cy); ctx.scale(g.f, 1);
+    ctx.drawImage(L.el, c.x * L.w, c.y * L.h, c.w * L.w, c.h * L.h, -g.dw / 2 + c.x * g.dw, -g.dh / 2 + c.y * g.dh, c.w * g.dw, c.h * g.dh);
+    ctx.restore();
+  }
+
+  const ease = (p) => p * p * (3 - 2 * p);
+  // a layer drawn onto a scratch canvas, so it can be blended as one opaque picture (its black bars included)
+  let scratch = null;
+  function snapLayer(cw, ch, L) {
+    if (!scratch) scratch = document.createElement('canvas');
+    if (scratch.width !== cw || scratch.height !== ch) { scratch.width = cw; scratch.height = ch; }
+    drawLayer(scratch.getContext('2d'), cw, ch, L);
+    return scratch;
+  }
+  // A = outgoing layer, B = incoming layer, p = 0..1
+  function drawTransition(ctx, cw, ch, A, B, type, p) {
+    p = ease(clamp(p, 0, 1));
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
-    if (el && srcW) {
-      const z = (seg && seg.zoom) || 1;
-      const sc = (fitMode === 'cover' ? Math.max(cw / srcW, ch / srcH) : Math.min(cw / srcW, ch / srcH)) * z;
-      const dw = srcW * sc, dh = srcH * sc;
-      ctx.save();
-      ctx.translate(cw / 2 + ((seg && seg.px) || 0) * cw, ch / 2 + ((seg && seg.py) || 0) * ch);
-      if (seg && seg.flip) ctx.scale(-1, 1);
-      ctx.drawImage(el, -dw / 2, -dh / 2, dw, dh);
-      ctx.restore();
+    if (type === 'fade') {
+      drawLayer(ctx, cw, ch, A);
+      ctx.save(); ctx.globalAlpha = p; ctx.drawImage(snapLayer(cw, ch, B), 0, 0); ctx.restore();
+    } else if (type === 'dipB' || type === 'dipW') {
+      drawLayer(ctx, cw, ch, p < 0.5 ? A : B);
+      ctx.save(); ctx.fillStyle = type === 'dipB' ? '#000' : '#fff'; ctx.globalAlpha = p < 0.5 ? p * 2 : (1 - p) * 2; ctx.fillRect(0, 0, cw, ch); ctx.restore();
+    } else if (type === 'zoom') {
+      drawLayer(ctx, cw, ch, B);
+      ctx.save(); ctx.globalAlpha = 1 - p; ctx.translate(cw / 2, ch / 2); const k = 1 + p * 0.4; ctx.scale(k, k); ctx.translate(-cw / 2, -ch / 2);
+      ctx.drawImage(snapLayer(cw, ch, A), 0, 0); ctx.restore();
+    } else {
+      const dir = type.slice(-1), horiz = dir === 'L' || dir === 'R', sgn = dir === 'L' || dir === 'U' ? -1 : 1;
+      if (type.startsWith('slide')) {
+        const size = horiz ? cw : ch;
+        for (const [L, o] of [[A, sgn * p * size], [B, sgn * (p - 1) * size]]) {
+          ctx.save(); if (horiz) ctx.translate(o, 0); else ctx.translate(0, o);
+          drawLayer(ctx, cw, ch, L); ctx.restore();
+        }
+      } else {   // wipe: the incoming cut is revealed from the right/bottom (L/U) or left/top (R/D)
+        drawLayer(ctx, cw, ch, A);
+        ctx.save(); ctx.beginPath();
+        if (dir === 'L') ctx.rect(cw * (1 - p), 0, cw * p, ch); else if (dir === 'R') ctx.rect(0, 0, cw * p, ch);
+        else if (dir === 'U') ctx.rect(0, ch * (1 - p), cw, ch * p); else ctx.rect(0, 0, cw, ch * p);
+        ctx.clip(); drawLayer(ctx, cw, ch, B); ctx.restore();
+      }
     }
-    for (const o of drawOrder(activeOverlays(t))) drawOverlay(ctx, o, cw, ch);
-    if (ui && selOv) { const o = ovOf(selOv); if (o && t >= o.start && t < o.end) drawSelection(ctx, o, cw, ch); }
+  }
+
+  function drawCutBox(ctx, cw, ch, L) {
+    const k = view.width / (view.getBoundingClientRect().width || view.width), hs = 12 * k;
+    const g = geom(cw, ch, L), c = cropOf(L.seg);
+    const x0 = -g.dw / 2 + c.x * g.dw, y0 = -g.dh / 2 + c.y * g.dh, w = c.w * g.dw, h = c.h * g.dh;
+    ctx.save(); ctx.translate(g.cx, g.cy); ctx.scale(g.f, 1);
+    ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 2 * k; ctx.strokeRect(x0, y0, w, h);
+    ctx.fillStyle = '#fff';
+    for (const [hx, hy] of cutHandles()) {
+      const x = x0 + (hx + 1) * w / 2 - hs / 2, y = y0 + (hy + 1) * h / 2 - hs / 2;
+      ctx.fillRect(x, y, hs, hs); ctx.strokeRect(x, y, hs, hs);
+    }
+    ctx.restore();
+  }
+  // handles shown on the selected cut: bottom-right corner scales; in crop mode all edges (only corners while a ratio is locked)
+  const cutHandles = () => (!cropMode ? [[1, 1]] : cropLockKey !== 'free' ? CROP_HANDLES.filter(([x, y]) => x && y) : CROP_HANDLES);
+
+  // draws one frame of the project at timeline time t: main layer (+ outgoing layer `o` while transition `tr` plays) + overlays
+  function drawScene(ctx, cw, ch, t, main, o, tr, ui) {
+    if (o && tr) drawTransition(ctx, cw, ch, o, main, tr.type, tr.p);
+    else {
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch);
+      if (ui && cropMode) drawLayer(ctx, cw, ch, main, 'faint');
+      drawLayer(ctx, cw, ch, main, 'nobg');
+    }
+    for (const ov of drawOrder(activeOverlays(t))) drawOverlay(ctx, ov, cw, ch);
+    if (ui && selOv) { const ov = ovOf(selOv); if (ov && t >= ov.start && t < ov.end) drawSelection(ctx, ov, cw, ch); }
+    else if (ui && main && main.el) drawCutBox(ctx, cw, ch, main);
+  }
+
+  const mainLayer = () => {
+    const seg = segs[playIdx], src = seg && srcOf(seg);
+    return src ? { el: src.missing ? null : v, w: src.w, h: src.h, seg } : null;
+  };
+
+  // While a transition plays, the previous cut keeps running on a second element. Returns its layer state (or null).
+  function clearOut() { if (out) { if (out.el !== v) out.el.pause(); out.el.volume = 1; out = null; } }
+  function syncOut() {
+    const i = playIdx, td = tdur(i), dt = editTime() - offset(i);
+    if (!v || !td || dt >= td || srcOf(segs[i - 1]).missing) { clearOut(); if (v) v.volume = 1; return null; }
+    const prev = segs[i - 1];
+    if (out && (out.idx !== i - 1 || out.el === v)) clearOut();
+    if (!out) { const ps = srcOf(prev); out = { el: ps.el === v ? altEl(ps) : ps.el, idx: i - 1 }; }
+    const want = prev.end - td + dt, el = out.el;
+    if (!v.paused) { if (el.paused) el.play(); if (Math.abs(el.currentTime - want) > 0.25) el.currentTime = want; }
+    else { if (!el.paused) el.pause(); if (Math.abs(el.currentTime - want) > 0.04) el.currentTime = want; }
+    const p = clamp(dt / td, 0, 1);
+    v.volume = Math.sin(p * Math.PI / 2); el.volume = Math.cos(p * Math.PI / 2);
+    return { el, seg: prev, p };
   }
 
   function drawPreview() {
     if (!loaded()) { vctx.fillStyle = '#000'; vctx.fillRect(0, 0, view.width, view.height); return; }
     if (!v) return;
-    const src = srcOf(segs[playIdx]);
-    drawScene(vctx, view.width, view.height, editTime(), src.missing ? null : src.el, src.w, src.h, !exporting, segs[playIdx]);
+    const seg = segs[playIdx], src = srcOf(seg), main = mainLayer();
+    let o = null, tr = null;
+    const so = exporting ? null : syncOut();
+    if (so) { const ps = srcOf(so.seg); o = { el: so.el, w: ps.w, h: ps.h, seg: so.seg }; tr = { type: seg.trans.type, p: so.p }; }
+    drawScene(vctx, view.width, view.height, editTime(), main, o, tr, !exporting);
     if (src.missing) {
       vctx.save(); vctx.fillStyle = 'rgba(255,255,255,.85)'; vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
       vctx.font = `700 ${view.width * 0.04}px ${FONT}`;
@@ -391,6 +511,9 @@
       return startMove(e, hit, p);
     }
     if (selOv) { selOv = null; render(); renderEdit(); }
+    const hh = hitCutHandle(p);
+    if (hh) return cropMode ? startCrop(e, hh, p) : startZoom(e, p);
+    if (cropMode && insideCrop(p)) return startCrop(e, [0, 0], p);
     startPan(e, segs[playIdx], p);
   });
   view.addEventListener('wheel', (e) => {
@@ -406,7 +529,10 @@
     if (!loaded() || exporting || e.buttons) return;
     const p = toCanvas(e), vis = activeOverlays(editTime());
     const cur = selOv && vis.find((o) => o.id === selOv);
-    view.style.cursor = cur && hitHandle(cur, p) ? 'nwse-resize' : vis.some((o) => hitBody(o, p)) ? 'move' : 'grab';
+    const hh = !selOv && hitCutHandle(p);
+    view.style.cursor = cur && hitHandle(cur, p) ? 'nwse-resize' : vis.some((o) => hitBody(o, p)) ? 'move'
+      : hh ? (hh[0] && hh[1] ? (hh[0] * hh[1] > 0 ? 'nwse-resize' : 'nesw-resize') : hh[0] ? 'ew-resize' : 'ns-resize')
+      : cropMode && insideCrop(p) ? 'move' : 'grab';
   });
 
   function dragWindow(move, up) {
@@ -440,6 +566,92 @@
       seg.px = +x.toFixed(4); seg.py = +y.toFixed(4);
     }, () => { view.style.cursor = 'default'; renderCutView(); });
   }
+  // ----- cut handles: scale (zoom) the cut, or crop it (crop mode) -----
+  const toLocal = (g, p) => ({ x: (p.x - g.cx) * g.f, y: p.y - g.cy });
+  function cropRect(g, c) {
+    const x0 = -g.dw / 2 + c.x * g.dw, y0 = -g.dh / 2 + c.y * g.dh;
+    return { x0, y0, x1: x0 + c.w * g.dw, y1: y0 + c.h * g.dh };
+  }
+  function hitCutHandle(p) {
+    const L = mainLayer(); if (!L || !L.el) return null;
+    const g = geom(view.width, view.height, L), r = cropRect(g, cropOf(L.seg)), l = toLocal(g, p);
+    for (const [hx, hy] of cutHandles()) {
+      const x = r.x0 + (hx + 1) * (r.x1 - r.x0) / 2, y = r.y0 + (hy + 1) * (r.y1 - r.y0) / 2;
+      if (Math.abs(l.x - x) <= 14 * p.k && Math.abs(l.y - y) <= 14 * p.k) return [hx, hy];
+    }
+    return null;
+  }
+  function insideCrop(p) {
+    const L = mainLayer(); if (!L || !L.el) return false;
+    const g = geom(view.width, view.height, L), r = cropRect(g, cropOf(L.seg)), l = toLocal(g, p);
+    return l.x >= r.x0 && l.x <= r.x1 && l.y >= r.y0 && l.y <= r.y1;
+  }
+  function startZoom(e, p0) {
+    e.preventDefault();
+    snapshot();
+    const seg = segs[playIdx], g = geom(view.width, view.height, mainLayer());
+    const d0 = Math.hypot(p0.x - g.cx, p0.y - g.cy) || 1, z0 = seg.zoom || 1;
+    dragWindow((ev) => {
+      const p = toCanvas(ev);
+      seg.zoom = +clamp(z0 * Math.hypot(p.x - g.cx, p.y - g.cy) / d0, 0.2, 5).toFixed(3);
+    }, renderCutView);
+  }
+  function setCrop(seg, c) {
+    const r = (x) => +x.toFixed(4);
+    const x = clamp(c.x, 0, 0.95), y = clamp(c.y, 0, 0.95), w = clamp(c.w, 0.05, 1 - x), h = clamp(c.h, 0.05, 1 - y);
+    if (x < 0.0005 && y < 0.0005 && w > 0.9995 && h > 0.9995) delete seg.crop; else seg.crop = { x: r(x), y: r(y), w: r(w), h: r(h) };
+  }
+  function lockRatio(L) {
+    if (cropLockKey === 'orig') return L.w / L.h;
+    if (cropLockKey === 'out') { const [W, H] = outSize(); return W / H; }
+    return RATIOS[cropLockKey] ? RATIOS[cropLockKey][0] / RATIOS[cropLockKey][1] : 0;
+  }
+  // drag a crop handle ([0,0] = move the whole crop window); all math is in the video's own (unflipped) space
+  function startCrop(e, [hx, hy], p0) {
+    e.preventDefault();
+    snapshot();
+    const L = mainLayer(), seg = L.seg, g = geom(view.width, view.height, L), r0 = cropRect(g, cropOf(seg));
+    const bx = g.dw / 2, by = g.dh / 2, minW = g.dw * 0.05, minH = g.dh * 0.05, ratio = lockRatio(L), l0 = toLocal(g, p0);
+    dragWindow((ev) => {
+      const l = toLocal(g, toCanvas(ev)), dx = l.x - l0.x, dy = l.y - l0.y;
+      let { x0, y0, x1, y1 } = r0;
+      if (!hx && !hy) {
+        const w = r0.x1 - r0.x0, h = r0.y1 - r0.y0;
+        x0 = clamp(r0.x0 + dx, -bx, bx - w); y0 = clamp(r0.y0 + dy, -by, by - h); x1 = x0 + w; y1 = y0 + h;
+      } else if (ratio && hx && hy) {   // locked ratio: the opposite corner stays, width follows the pointer
+        const fx = hx < 0 ? r0.x1 : r0.x0, fy = hy < 0 ? r0.y1 : r0.y0;
+        const maxW = Math.min(hx < 0 ? fx + bx : bx - fx, (hy < 0 ? fy + by : by - fy) * ratio);
+        const w = clamp(Math.abs((hx < 0 ? r0.x0 : r0.x1) + dx - fx), minW, Math.max(minW, maxW)), h = w / ratio;
+        x0 = hx < 0 ? fx - w : fx; x1 = x0 + w; y0 = hy < 0 ? fy - h : fy; y1 = y0 + h;
+      } else {
+        if (hx < 0) x0 = clamp(r0.x0 + dx, -bx, r0.x1 - minW); else if (hx > 0) x1 = clamp(r0.x1 + dx, r0.x0 + minW, bx);
+        if (hy < 0) y0 = clamp(r0.y0 + dy, -by, r0.y1 - minH); else if (hy > 0) y1 = clamp(r0.y1 + dy, r0.y0 + minH, by);
+      }
+      setCrop(seg, { x: (x0 + bx) / g.dw, y: (y0 + by) / g.dh, w: (x1 - x0) / g.dw, h: (y1 - y0) / g.dh });
+    }, renderCutView);
+  }
+  // largest crop of the chosen ratio, centred on the current crop
+  function applyCropRatio() {
+    const L = mainLayer(), ratio = L && lockRatio(L);
+    if (!L || !ratio) return;
+    const c = cropOf(L.seg), cx = c.x + c.w / 2, cy = c.y + c.h / 2;
+    let w = 1, h = L.w / ratio / L.h;
+    if (h > 1) { h = 1; w = ratio * L.h / L.w; }
+    setCrop(L.seg, { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h });
+  }
+  // zoom/move the cut so the cropped area fills the output frame (per the 화면 setting)
+  function fitCrop() {
+    const L = mainLayer(), seg = segs[playIdx];
+    if (!L || !L.el) return;
+    const cw = view.width, ch = view.height, c = cropOf(seg);
+    const pick = fitMode === 'cover' ? Math.max : Math.min;
+    const sc0 = pick(cw / L.w, ch / L.h), f = seg.flip ? -1 : 1;
+    seg.zoom = +clamp(pick(cw / (c.w * L.w), ch / (c.h * L.h)) / sc0, 0.2, 5).toFixed(3);
+    const sc = sc0 * seg.zoom;
+    seg.px = +(-f * (c.x + c.w / 2 - 0.5) * L.w * sc / cw).toFixed(4);
+    seg.py = +(-(c.y + c.h / 2 - 0.5) * L.h * sc / ch).toFixed(4);
+  }
+
   function startScale(e, o, p0) {
     e.preventDefault();
     snapshot();
@@ -502,6 +714,18 @@
       b.innerHTML = '<canvas></canvas><b></b><i class="handle l"></i><i class="handle r"></i>';
       b.querySelector('b').textContent = (i + 1) + ' · ' + src.name + ' · ' + (seg.end - seg.start).toFixed(1) + 's';
       track.appendChild(b);
+    });
+    segs.forEach((seg, i) => {   // transition zones (the two cuts overlap here)
+      const td = tdur(i);
+      if (!td) return;
+      const m = document.createElement('div');
+      m.className = 'trans';
+      m.style.left = offset(i) * pps + 'px';
+      m.style.width = Math.max(td * pps, 12) + 'px';
+      m.dataset.i = i;
+      m.title = '전환: ' + TRANS.find((t) => t[0] === seg.trans.type)[1] + ' ' + td.toFixed(1) + '초';
+      m.innerHTML = '<span>⇄</span><i class="handle r"></i>';
+      track.appendChild(m);
     });
     // overlay lanes
     const lanes = assignLanes();
@@ -614,35 +838,80 @@
     return t;
   }
 
-  // ---------- cut screen panel (zoom / position / flip of the cut under the playhead) ----------
+  // ---------- cut panel: screen (zoom / position / flip), crop, transition of the cut under the playhead ----------
   let cutViewIdx = -1;
+  const curTrans = () => (playIdx > 0 ? segs[playIdx].trans || { type: 'none', dur: 0.5 } : transDefault);
   function renderCutView() {
     const box = $('cutView'), seg = segs[playIdx];
     cutViewIdx = playIdx;
     if (!seg) { box.innerHTML = ''; return; }
     const row = (k, label, min, max, step, val, scale) =>
       `<div class="f"><label>${label}</label><div class="row"><input type="range" data-cv="${k}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output></div></div>`;
-    box.innerHTML = `<h3>컷 ${playIdx + 1} 화면 (크롭)</h3>` +
+    const c = cropOf(seg), pct = (x) => Math.max(0, Math.round(x * 100)), tr = curTrans(), eff = playIdx > 0 ? tdur(playIdx) : 0;
+    box.innerHTML = `<h3>컷 ${playIdx + 1} 화면</h3>` +
       row('zoom', '확대', 20, 500, 1, Math.round((seg.zoom || 1) * 100), 0.01) +
       row('px', '가로 위치', -100, 100, 1, Math.round((seg.px || 0) * 100), 0.01) +
       row('py', '세로 위치', -100, 100, 1, Math.round((seg.py || 0) * 100), 0.01) +
       `<div class="f"><label><input type="checkbox" data-cv="flip"> 좌우 반전</label></div>` +
       `<div class="actions"><button class="btn" data-cvreset="1">화면 초기화</button></div>` +
-      `<p class="hint">미리보기에서 빈 곳을 끌면 이동, 마우스 휠로 확대/축소</p>`;
+      `<p class="hint">미리보기: 영상을 끌면 이동, 마우스 휠/오른쪽 아래 모서리 끌기로 확대·축소</p>` +
+      `<h3>크롭 (잘라내기)</h3>` +
+      `<div class="actions"><button class="btn${cropMode ? ' on' : ''}" data-cvact="crop">✂ 크롭 편집</button><button class="btn" data-cvact="fit">프레임에 맞추기</button><button class="btn" data-cvact="uncrop">크롭 해제</button></div>` +
+      `<div class="f"><label>비율 고정</label><select data-cropar>${CROP_AR.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select></div>` +
+      row('cl', '왼쪽 자르기', 0, 90, 1, pct(c.x), 0.01) + row('cr', '오른쪽 자르기', 0, 90, 1, pct(1 - c.x - c.w), 0.01) +
+      row('ct', '위쪽 자르기', 0, 90, 1, pct(c.y), 0.01) + row('cb', '아래쪽 자르기', 0, 90, 1, pct(1 - c.y - c.h), 0.01) +
+      `<p class="hint">[크롭 편집]을 켜고 미리보기의 테두리/모서리를 끌면 잘라냅니다 (안쪽을 끌면 크롭 창 이동). 자른 뒤 [프레임에 맞추기]로 화면을 채우세요.</p>` +
+      `<h3>${playIdx ? `전환 · 컷 ${playIdx} → 컷 ${playIdx + 1}` : '전환 (첫 컷에는 적용되지 않음 · 일괄 적용용 설정)'}</h3>` +
+      `<div class="f"><label>효과</label><select data-tr="type">${TRANS.map(([k, n]) => `<option value="${k}">${n}</option>`).join('')}</select></div>` +
+      `<div class="f"><label>길이</label><div class="row"><input type="range" data-tr="dur" min="1" max="30" step="1" value="${Math.round(tr.dur * 10)}"><output>${tr.dur.toFixed(1)}초</output></div></div>` +
+      `<div class="actions"><button class="btn" data-cvact="trall">모든 컷 사이에 적용</button></div>` +
+      `<p class="hint">전환 구간만큼 두 컷이 겹쳐 전체 길이가 짧아집니다.${playIdx && tr.type !== 'none' && eff < tr.dur - 0.01 ? ` 이 컷은 짧아서 실제로는 ${eff.toFixed(2)}초 적용됩니다.` : ''}</p>`;
     box.querySelector('[data-cv=flip]').checked = !!seg.flip;
+    box.querySelector('[data-cropar]').value = cropLockKey;
+    box.querySelector('[data-tr=type]').value = tr.type;
+    box.querySelector('[data-tr=dur]').disabled = tr.type === 'none';
   }
   $('cutView').addEventListener('input', (e) => {
-    const el = e.target, k = el.dataset.cv, seg = segs[playIdx];
-    if (!k || !seg) return;
+    const el = e.target, seg = segs[playIdx], box = $('cutView');
+    if (!seg) return;
+    if (el.dataset.tr) {
+      if (armed) { snapshot(); armed = false; }
+      const patch = el.dataset.tr === 'type' ? { type: el.value } : { dur: +el.value / 10 };
+      if (patch.dur) el.parentElement.querySelector('output').textContent = patch.dur.toFixed(1) + '초';
+      if (patch.type) box.querySelector('[data-tr=dur]').disabled = patch.type === 'none';
+      if (playIdx > 0) seg.trans = { ...curTrans(), ...patch }; else Object.assign(transDefault, patch);
+      renderTimeline();
+      return;
+    }
+    if ('cropar' in el.dataset) { snapshot(); cropLockKey = el.value; applyCropRatio(); renderCutView(); return; }
+    const k = el.dataset.cv;
+    if (!k) return;
     if (armed) { snapshot(); armed = false; }
     if (el.type === 'checkbox') seg[k] = el.checked;
-    else { seg[k] = +(parseFloat(el.value) * parseFloat(el.dataset.scale)).toFixed(4); el.parentElement.querySelector('output').textContent = el.value; }
+    else if (k.length === 2 && k[0] === 'c') {   // crop sliders: how much is cut off each side (%)
+      const c = cropOf(seg), m = { l: c.x, t: c.y, r: 1 - c.x - c.w, b: 1 - c.y - c.h };
+      const side = { cl: 'l', cr: 'r', ct: 't', cb: 'b' }[k], opp = { l: 'r', r: 'l', t: 'b', b: 't' }[side];
+      m[side] = clamp(+el.value / 100, 0, 0.95 - Math.max(0, m[opp]));
+      el.value = Math.round(m[side] * 100);
+      el.parentElement.querySelector('output').textContent = el.value;
+      cropLockKey = 'free'; box.querySelector('[data-cropar]').value = 'free';
+      setCrop(seg, { x: m.l, y: m.t, w: 1 - m.l - m.r, h: 1 - m.t - m.b });
+    } else { seg[k] = +(parseFloat(el.value) * parseFloat(el.dataset.scale)).toFixed(4); el.parentElement.querySelector('output').textContent = el.value; }
   });
   $('cutView').addEventListener('change', () => { armed = true; });
   $('cutView').addEventListener('click', (e) => {
-    if (!e.target.dataset.cvreset || !segs[playIdx]) return;
-    snapshot();
-    Object.assign(segs[playIdx], { zoom: 1, px: 0, py: 0, flip: false });
+    const b = e.target.closest('button'), seg = segs[playIdx];
+    if (!b || !seg) return;
+    if (b.dataset.cvreset) { snapshot(); Object.assign(seg, { zoom: 1, px: 0, py: 0, flip: false }); }
+    else if (b.dataset.cvact === 'crop') cropMode = !cropMode;
+    else if (b.dataset.cvact === 'fit') { snapshot(); fitCrop(); }
+    else if (b.dataset.cvact === 'uncrop') { snapshot(); delete seg.crop; cropLockKey = 'free'; }
+    else if (b.dataset.cvact === 'trall') {
+      snapshot();
+      const t = curTrans();
+      segs.forEach((sg, i) => { if (i > 0) sg.trans = { type: t.type, dur: t.dur }; });
+      renderTimeline();
+    } else return;
     renderCutView();
   });
 
@@ -725,7 +994,9 @@
     const seg = segs[playIdx], s = v.currentTime;
     if (s - seg.start < MIN_LEN || seg.end - s < MIN_LEN) return;
     snapshot();
-    segs.splice(playIdx, 1, { ...seg, id: nextId++, start: seg.start, end: s }, { ...seg, id: nextId++, start: s, end: seg.end });
+    const b = { ...seg, id: nextId++, start: s, end: seg.end };
+    delete b.trans;   // the second half continues the first one, no transition between
+    segs.splice(playIdx, 1, { ...seg, id: nextId++, start: seg.start, end: s }, b);
     sel = playIdx + 1; playIdx = sel;
     render();
   }
@@ -775,21 +1046,31 @@
   function tick() {
     if (loaded() && !v.paused) {
       const seg = segs[playIdx];
-      // pre-seek the next cut's video so the switch is seamless
       const next = segs[playIdx + 1];
-      if (mode === 'all' && next && prepped !== playIdx && seg.end - v.currentTime < 0.4) {
+      const td = mode === 'all' && next ? tdur(playIdx + 1) : 0;   // next cut starts this early, overlapping this one
+      const switchAt = td ? seg.end - td : seg.end - 0.03;
+      // pre-seek the next cut's video so the switch is seamless
+      if (mode === 'all' && next && prepped !== playIdx && switchAt - v.currentTime < 0.4) {
         prepped = playIdx;
-        const ns = srcOf(next);
-        if (ns.el !== v) ns.el.currentTime = next.start;
+        const ns = srcOf(next), el = td && ns.el === v ? altEl(ns) : ns.el;
+        if (el !== v && !(out && out.el === el)) el.currentTime = next.start;
       }
-      if (v.currentTime >= seg.end - 0.03) {
+      if (v.currentTime >= switchAt) {
         if (mode === 'cut') {
           if ($('loop').checked || exporting) v.currentTime = seg.start; else { v.pause(); v.currentTime = seg.start; }
         } else if (next) {
           const sameSrc = next.src === seg.src;
-          const old = v;
+          const old = v, ns = srcOf(next);
           playIdx++;
-          if (sameSrc) {
+          if (td) {   // transition: this cut keeps playing underneath while the next one starts on another element
+            let el = ns.el;
+            if (el === old || (out && out.el === el)) el = altEl(ns);
+            clearOut();
+            out = { el: old, idx: playIdx - 1 };
+            v = el;
+            if (Math.abs(v.currentTime - next.start) > 0.06) v.currentTime = next.start;
+            v.play();
+          } else if (sameSrc) {
             if (Math.abs(next.start - v.currentTime) > 0.06) v.currentTime = next.start;
           } else {
             old.pause();
@@ -815,9 +1096,8 @@
   function seekEdit(t) {
     if (!loaded()) return;
     t = clamp(t, 0, total());
-    let acc = 0, i = 0;
-    for (; i < segs.length - 1; i++) { const d = segs[i].end - segs[i].start; if (t < acc + d) break; acc += d; }
-    goto(i, segs[i].start + clamp(t - acc, 0, segs[i].end - segs[i].start));
+    const i = cutAt(t);
+    goto(i, segs[i].start + clamp(t - offset(i), 0, len(segs[i])));
     if (mode === 'cut' && !selOv) { sel = i; render(); }
     updateTime();
   }
@@ -847,7 +1127,9 @@
     if (!loaded() || exporting) return;
     const handle = e.target.closest('.handle');
     const block = e.target.closest('.block');
+    const tm = e.target.closest('.trans');   // only its right handle is clickable: trims the previous cut
     const clip = e.target.closest('.oclip');
+    if (tm) return startTrim(e, +tm.dataset.i - 1, false);
     if (clip) return startOverlayDrag(e, ovOf(+clip.dataset.id), handle ? (handle.classList.contains('l') ? 'l' : 'r') : 'move');
     if (handle && block) return startTrim(e, +block.dataset.i, handle.classList.contains('l'));
     if (block) { sel = +block.dataset.i; selOv = null; tab = 'cuts'; seekEdit(xToEdit(e.clientX)); render(); renderEdit(); }
@@ -903,6 +1185,10 @@
   }
 
   async function exportRealtime() {
+    if (segs.some((_, i) => tdur(i))) {
+      alert('컷 전환 효과가 있는 영상은 WebCodecs를 지원하는 최신 Chrome/Edge에서만 내보낼 수 있습니다.\n(전환을 [없음]으로 바꾸면 이 브라우저에서도 내보낼 수 있습니다)');
+      return;
+    }
     if (new Set(segs.map((s) => s.src)).size > 1) {
       alert('여러 영상을 합쳐 내보내려면 WebCodecs를 지원하는 최신 Chrome/Edge가 필요합니다.');
       return;
@@ -994,26 +1280,25 @@
     let aenc = null;
     if (ac) { aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: (e) => { encErr = e; } }); aenc.configure(ac.cfg); }
 
-    const frameCounts = segs.map((s) => Math.max(1, Math.round((s.end - s.start) * FPS)));
-    const offs = segs.map((_, i) => offset(i));
-    const totalFrames = frameCounts.reduce((a, b) => a + b, 0);
+    const totalFrames = Math.max(1, Math.round(total() * FPS));
     let done = 0;
 
     if (ac) {
-      const lens = segs.map((s) => Math.floor((s.end - s.start) * ac.sr));
-      const n = lens.reduce((a, b) => a + b, 0);
+      // mix every cut at its timeline position; overlapping transition zones are cross-faded (equal power)
+      const n = Math.ceil(total() * ac.sr);
       const flat = [new Float32Array(n), new Float32Array(n)];
-      let o = 0;
-      segs.forEach((s, i) => {
-        const buf = bufs.get(s.src);
-        if (buf) {
-          const a = Math.floor(s.start * ac.sr);
-          for (let c = 0; c < 2; c++) {
-            const d = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1)).subarray(a, a + lens[i]);
-            flat[c].set(d, o);
+      segs.forEach((sg, i) => {
+        const buf = bufs.get(sg.src);
+        if (!buf) return;
+        const o = Math.round(offset(i) * ac.sr), a = Math.floor(sg.start * ac.sr), full = Math.floor(len(sg) * ac.sr);
+        const L = Math.min(full, n - o), hin = Math.floor(tdur(i) * ac.sr), hout = Math.floor(tdur(i + 1) * ac.sr);
+        for (let c = 0; c < 2; c++) {
+          const d = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1)), f = flat[c];
+          for (let j = 0; j < L; j++) {
+            const g = j < hin ? Math.sin(j / hin * Math.PI / 2) : j >= full - hout ? Math.cos((j - (full - hout)) / hout * Math.PI / 2) : 1;
+            f[o + j] += (d[a + j] || 0) * g;
           }
         }
-        o += lens[i];
       });
       const CH = 4096;
       for (let pos = 0; pos < n && !cancelExport; pos += CH) {
@@ -1032,21 +1317,24 @@
     cv.width = W; cv.height = H;
     const ctx = cv.getContext('2d');
 
-    outer:
-    for (let i = 0; i < segs.length; i++) {
-      const src = srcOf(segs[i]);
-      for (let k = 0; k < frameCounts[i]; k++) {
-        if (cancelExport) break outer;
-        if (encErr) throw encErr;
-        await seekTo(src.el, Math.min(segs[i].start + k / FPS, segs[i].end - 0.001));
-        drawScene(ctx, W, H, offs[i] + k / FPS, src.el, src.w, src.h, false, segs[i]);
-        const frame = new VideoFrame(cv, { timestamp: Math.round(done * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
-        venc.encode(frame, { keyFrame: done % 60 === 0 });
-        frame.close();
-        done++;
-        while (venc.encodeQueueSize > 8) await sleep(2);
-        if (done % 5 === 0) { setProgress(done / totalFrames); await sleep(0); }
+    for (let k = 0; k < totalFrames; k++) {
+      if (cancelExport) break;
+      if (encErr) throw encErr;
+      const t = k / FPS, i = cutAt(t), seg = segs[i], src = srcOf(seg), td = tdur(i), dt = Math.max(0, t - offset(i));
+      await seekTo(src.el, Math.min(seg.start + dt, seg.end - 0.001));
+      let o = null, tr = null;
+      if (td && dt < td) {   // inside a transition: the previous cut is drawn too, from its own element
+        const ps = segs[i - 1], psrc = srcOf(ps), el = psrc.el === src.el ? altEl(psrc) : psrc.el;
+        await seekTo(el, Math.min(ps.end - td + dt, ps.end - 0.001));
+        o = { el, w: psrc.w, h: psrc.h, seg: ps }; tr = { type: seg.trans.type, p: dt / td };
       }
+      drawScene(ctx, W, H, t, { el: src.el, w: src.w, h: src.h, seg }, o, tr, false);
+      const frame = new VideoFrame(cv, { timestamp: Math.round(done * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+      venc.encode(frame, { keyFrame: done % 60 === 0 });
+      frame.close();
+      done++;
+      while (venc.encodeQueueSize > 8) await sleep(2);
+      if (done % 5 === 0) { setProgress(done / totalFrames); await sleep(0); }
     }
     if (cancelExport) { venc.close(); aenc && aenc.close(); return null; }
     await venc.flush(); if (aenc) await aenc.flush();
@@ -1100,10 +1388,19 @@
   }
 
   function resetProject() {
-    for (const s of sources) { s.el.remove(); if (s.url) URL.revokeObjectURL(s.url); }
+    for (const s of sources) { s.el.remove(); if (s.alt) s.alt.remove(); if (s.url) URL.revokeObjectURL(s.url); }
+    out = null; cropMode = false; cropLockKey = 'free';
     sources.length = 0; imgs.clear();
     segs = []; overlays = []; selOv = null; v = null; sel = 0; playIdx = 0; history = []; pending.length = 0; cutViewIdx = -1;
     $('undo').disabled = true;
+  }
+
+  // saved projects may predate (or garble) the transition / crop fields
+  function cleanSeg(sg) {
+    const o = { ...sg }, t = o.trans, c = o.crop;
+    if (t && TRANS_TYPES.has(t.type) && t.type !== 'none') o.trans = { type: t.type, dur: clamp(+t.dur || 0.5, 0.1, 3) }; else delete o.trans;
+    if (c && [c.x, c.y, c.w, c.h].every(Number.isFinite) && c.x >= 0 && c.y >= 0 && c.w > 0.01 && c.h > 0.01 && c.x + c.w <= 1.0001 && c.y + c.h <= 1.0001) o.crop = { x: c.x, y: c.y, w: c.w, h: c.h }; else delete o.crop;
+    return o;
   }
 
   async function applyProject(p) {
@@ -1117,7 +1414,7 @@
       const el = new Image(); el.src = im.dataUrl;
       try { await el.decode(); imgs.set(im.id, { el, w: el.naturalWidth || 400, h: el.naturalHeight || 400, name: im.name, dataUrl: im.dataUrl }); } catch (e) { /* skip broken image */ }
     }
-    segs = p.segs.filter((sg) => sources.some((x) => x.id === sg.src));
+    segs = p.segs.filter((sg) => sources.some((x) => x.id === sg.src)).map(cleanSeg);
     overlays = (p.overlays || []).filter((o) => o.type === 'text' || imgs.has(o.imgId));
     nextId = Math.max(p.nextId || 1, ...segs.map((x) => x.id + 1), ...overlays.map((o) => o.id + 1), ...sources.map((x) => x.id + 1), ...[...imgs.keys()].map((k) => k + 1));
     if (!segs.length) throw new Error('프로젝트에 컷이 없습니다.');
@@ -1217,7 +1514,8 @@
   // test hook
   window.__editor = {
     get segs() { return segs; }, get sources() { return sources; }, get overlays() { return overlays; }, get playIdx() { return playIdx; }, get view() { return view; },
-    split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles, addImages, addText, undo,
+    split, deleteCut, moveCut, setMode, play, pause, seekEdit, addFiles, addImages, addText, undo, total, offset, tdur, drawScene, cropOf,
+    setTrans(i, type, dur = 0.5) { segs[i].trans = { type, dur }; renderTimeline(); }, setCrop(i, c) { setCrop(segs[i], c); }, exportVideo,
     setRatio(k) { $('ratio').value = k; ratioKey = k; setupCanvas(); }, setFit(k) { $('fit').value = k; fitMode = k; },
   };
 
