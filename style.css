@@ -146,3 +146,6 @@ video { position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events:
 .kfc button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .kfm { position: absolute; top: 3px; width: 9px; height: 9px; background: #ffd34d; border: 1px solid #5a4500; transform: rotate(45deg); z-index: 4; cursor: ew-resize; }
 .oclip .kfm { top: 8px; }
+
+/* inside the MedPark Office shell the tab bar already names the tool */
+.embed header h1 { display: none; }

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Videoeditool</title>
+<script>if (window.top !== window) document.documentElement.classList.add('embed');</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>간단 영상 편집기</h1>
+  <div class="spacer"></div>
+  <label class="btn tool" for="file" title="영상 추가"><b>🎞</b><span>영상 추가</span></label>
+  <input id="file" type="file" accept="video/*" multiple hidden>
+  <input id="relinkFile" type="file" accept="video/*" hidden>
+  <button id="addText" class="btn tool" disabled title="텍스트 추가"><b>T</b><span>텍스트</span></button>
+  <label class="btn tool" id="addImageLbl" for="imgFile" title="이미지 추가"><b>🖼</b><span>이미지</span></label>
+  <input id="imgFile" type="file" accept="image/*" multiple hidden>
+  <div class="spacer"></div>
+  <label class="chk">비율
+    <select id="ratio">
+      <option value="orig">원본</option>
+      <option value="16:9">16:9 가로</option>
+      <option value="9:16">9:16 세로(쇼츠)</option>
+      <option value="1:1">1:1 정사각</option>
+      <option value="4:5">4:5 인스타</option>
+    </select>
+  </label>
+  <label class="chk">화면
+    <select id="fit">
+      <option value="contain">여백 두기</option>
+      <option value="cover">꽉 채우기</option>
+    </select>
+  </label>
+  <span id="saveState" class="savestate"></span>
+  <button id="saveProj" class="btn" disabled title="프로젝트 파일(.json)로 저장">💾 저장</button>
+  <label class="btn" for="projFile" title="프로젝트 파일 열기">📂 열기</label>
+  <input id="projFile" type="file" accept=".json,application/json" hidden>
+  <button id="export" class="btn primary" disabled>내보내기</button>
+</header>
+<div id="restoreBar" class="restore" hidden>
+  <span id="restoreInfo"></span>
+  <button id="restoreGo" class="btn primary">이어서 편집</button>
+  <button id="restoreDel" class="btn">삭제</button>
+</div>
+
+<main id="drop">
+  <section class="preview">
+    <div class="stage" id="stage">
+      <canvas id="view" width="1280" height="720"></canvas>
+      <div id="empty" class="empty">영상을 여기로 끌어다 놓거나 [영상 추가]를 누르세요 (여러 개 가능)<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다</small></div>
+      <div id="exportOverlay" class="overlay" hidden>
+        <div>내보내는 중… <span id="exportPct">0%</span></div>
+        <div class="bar"><i id="exportBar"></i></div>
+        <small>실시간 속도로 녹화됩니다. 이 탭을 닫거나 숨기지 마세요.</small>
+        <button id="exportCancel" class="btn">취소</button>
+      </div>
+    </div>
+    <div class="controls">
+      <button id="play" class="btn" disabled>▶ 재생</button>
+      <div class="seg" role="group" aria-label="프리뷰 모드">
+        <button id="modeAll" class="btn on" disabled>통 프리뷰</button>
+        <button id="modeCut" class="btn" disabled>컷 프리뷰</button>
+      </div>
+      <label class="chk"><input id="loop" type="checkbox" checked> 컷 반복</label>
+      <span id="time" class="time">00:00.00 / 00:00.00</span>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="tabs">
+      <button id="tabSources">소스</button>
+      <button id="tabCuts" class="on">컷 목록</button>
+      <button id="tabEdit">편집</button>
+    </div>
+    <div id="panelSources" class="panel" hidden></div>
+    <div id="panelCuts" class="panel">
+      <ol id="cutList"></ol>
+      <p class="hint">클릭: 선택 · 두 번 클릭: 해당 컷 재생<br>영상을 추가하면 타임라인 맨 뒤에 붙습니다. ↑↓로 순서를 바꾸세요.<br>컷으로 쓰지 않은 부분은 [소스] 탭에서 골라 다시 컷으로 추가할 수 있습니다.</p>
+      <div id="cutView" class="cutview"></div>
+    </div>
+    <div id="panelEdit" class="panel" hidden></div>
+  </aside>
+</main>
+
+<section class="timeline">
+  <div class="tools">
+    <button id="split" class="btn" disabled>✂ 분할 (S)</button>
+    <button id="del" class="btn" disabled>삭제 (Del)</button>
+    <button id="undo" class="btn" disabled>실행취소 (Ctrl+Z)</button>
+    <div class="spacer"></div>
+    <label class="chk">확대 <input id="zoom" type="range" min="10" max="400" value="60"></label>
+  </div>
+  <div id="scroller" class="scroller">
+    <div id="inner" class="inner">
+      <div id="ruler" class="ruler"></div>
+      <div id="track" class="track"></div>
+      <div id="otrack" class="otrack"></div>
+      <div id="playhead" class="playhead"></div>
+    </div>
+  </div>
+  <p class="hint">컷/클립 양쪽 끝을 끌어 길이 조절 · 클립을 끌어 이동 · 빈 곳/눈금 클릭으로 이동 · Space 재생 · ←/→ 1프레임 · Shift+←/→ 1초 · 미리보기에서 텍스트를 끌어 위치/크기 조절</p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+@font-face { font-family: "Pretendard"; font-weight: 400; font-display: swap; src: url("fonts/Pretendard-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 700; font-display: swap; src: url("fonts/Pretendard-Bold.woff2") format("woff2"); }
+
+:root { --bg: #14161a; --panel: #1d2026; --line: #2d323b; --fg: #e6e8ec; --mute: #8b919c; --accent: #4f8cff; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.4 "Pretendard", system-ui, "Malgun Gothic", sans-serif; display: flex; flex-direction: column; }
+header.shell { display: flex; align-items: stretch; gap: 18px; padding: 0 14px; height: 38px; flex: none; background: var(--panel); border-bottom: 1px solid var(--line); }
+header.shell h1 { align-self: center; margin: 0; font-size: 14px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; }
+.apptabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.apptabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--mute); padding: 0 14px; font: inherit; cursor: pointer; white-space: nowrap; }
+.apptabs button:hover { color: var(--fg); }
+.apptabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.frames { flex: 1; min-height: 0; position: relative; }
+.frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.frames iframe[hidden] { display: none; }
