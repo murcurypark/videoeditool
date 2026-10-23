@@ -4,7 +4,7 @@
   const TOOLS = [
     { id: 'video', name: 'Videoeditool', src: 'video.html', ready: true },
     { id: 'pdf', name: 'PDFTrans', src: 'pdf.html', ready: true },
-    { id: 'doc', name: 'OfficeDocTool', src: 'doc.html', ready: false },
+    { id: 'doc', name: 'OfficeDocTool', src: 'doc.html', ready: true },
   ].filter((t) => t.ready);
 
   const nav = document.getElementById('apptabs'), frames = document.getElementById('frames');

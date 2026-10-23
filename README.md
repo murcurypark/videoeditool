@@ -6,7 +6,7 @@
 |---|---|---|
 | **Videoeditool** | `video.html` (`app.js`, `style.css`) | 컷 편집 영상 편집기 (아래 기능 참고) |
 | **PDFTrans** | `pdf.html` (`pdf.js`, `tool.css`) | PDF 변환기 (아래 참고) |
-| OfficeDocTool | `doc.html` (예정) | PDF/일러스트레이터(PDF 호환) 문서 편집 |
+| **OfficeDocTool** | `doc.html` (`doc.js`, `doc.css`, `tool.css`) | PDF/일러스트레이터(PDF 호환) 문서 편집 (아래 참고) |
 
 ## 구조
 - `index.html` + `shell.js` + `shell.css`: 바깥 페이지. 상단 탭과 도구별 iframe만 있습니다. 도구는 처음 열 때 불러오고, 탭을 바꿔도 숨기기만 해서 **다른 도구를 쓰는 동안에도 상태(불러온 영상, 편집 내용)가 유지**됩니다. 키보드 단축키와 파일 드롭은 열려 있는 도구에만 적용됩니다.
@@ -22,6 +22,15 @@
 - **PDF → 이미지**: 페이지를 골라 PNG/JPG로(72~300dpi). 여러 장이면 zip, 또는 선택한 페이지를 세로로 이어 붙여 긴 이미지 1장으로.
 - 한계: 암호가 걸린 PDF는 열 수 없습니다. 매우 큰 PDF/이미지는 브라우저 메모리를 많이 씁니다. 기존 PDF 안의 글자를 직접 고치는 기능은 없습니다(문서 편집기에서 다룰 예정).
 - 라이브러리(`vendor/`): [pdf-lib](https://github.com/Hopding/pdf-lib) (MIT), [pdf.js](https://github.com/mozilla/pdf.js) 구형 브라우저 호환(legacy) 빌드 (Apache-2.0, CMap/표준 글꼴/wasm 포함)
+
+## OfficeDocTool (문서 편집기)
+PDF나 일러스트레이터(.ai, **PDF 호환으로 저장한 파일만**) 위에 개체를 얹어 새 PDF로 저장합니다. 모두 브라우저 안에서만 처리합니다.
+- **도구**: 선택/이동/크기 조절/회전, 텍스트 상자(Pretendard, 크기·색·굵게·정렬), 사각형, 타원, 선, 화살표, 펜, 형광펜, **가리기**(색 박스로 덮기), 이미지 넣기, 서명(그려서 넣기), **글자 바꾸기**
+- **글자 바꾸기**: PDF 안의 글자 줄을 클릭하면 그 줄을 같은 배경색 박스로 덮고, 같은 자리·크기·색으로 수정할 수 있는 글자 상자를 만들어 줍니다. PDF에는 글자 흐름이 없어서 **원래 글자는 지워지지 않고 덮어씌워지며**, 글꼴은 Pretendard로 바뀝니다. 가리기도 마찬가지라 **기밀 정보를 가리는 용도로는 쓸 수 없습니다**(원본 글자가 파일 안에 남아 있어 복사·검색될 수 있음).
+- 속성 패널에서 색/선 굵기/투명도/회전/글자 내용, 복제·삭제·맨 앞/뒤로. 실행취소·다시실행, 방향키 이동, 페이지 이동·확대/축소, 페이지 썸네일(개체가 있는 페이지는 ●로 표시). 회전된 페이지도 화면에 보이는 그대로 저장됩니다.
+- 저장: 도형은 벡터로, 텍스트는 글꼴 윤곽선(벡터)으로 PDF에 넣습니다. 그래서 **새로 넣은 텍스트는 선택·검색할 수 없고**, 기존 PDF 내용은 그대로 유지됩니다. 텍스트를 넣어 저장할 때만 글꼴 파일(`fonts/Pretendard-*.ttf`)을 내려받습니다.
+- 열 수 없는 파일: `.indd`(인디자인)는 비공개 형식이라 열 수 없으니 PDF로 내보내서 여세요. PDF 호환 없이 저장한 `.ai`와 암호가 걸린 PDF도 열 수 없습니다. IDML과 일러스트레이터식 벡터 경로 편집은 지원하지 않습니다.
+- 페이지 순서·회전·삭제·합치기는 PDFTrans에서 하세요.
 
 ## Videoeditool (영상 편집기)
 
@@ -45,7 +54,7 @@ GitHub Pages 주소로 접속하세요 (로컬에서는 `index.html`). (Chrome/E
 
 ## GitHub Pages 배포 (1회 설정)
 1. 저장소 **Settings → Pages → Source** 를 **GitHub Actions** 로 선택
-2. `main` 브랜치에 푸시되면 자동 배포됩니다(`index.html`, `shell.*`, `video.html`, `app.js`, `style.css`, `pdf.html`, `pdf.js`, `tool.css`, `vendor`, `fonts`) → `https://<계정>.github.io/videoeditool/`
+2. `main` 브랜치에 푸시되면 자동 배포됩니다(`index.html`, `shell.*`, `video.html`, `app.js`, `style.css`, `pdf.html`, `pdf.js`, `tool.css`, `doc.html`, `doc.js`, `doc.css`, `vendor`, `fonts`) → `https://<계정>.github.io/videoeditool/`
 
 ### 한계
 - 내보내기는 30fps, 원본 해상도(짝수로 보정)로 재인코딩합니다. 영상은 H.264(미지원 시 VP9), 오디오는 AAC(미지원 시 Opus)입니다.
@@ -58,7 +67,8 @@ GitHub Pages 주소로 접속하세요 (로컬에서는 `index.html`). (Chrome/E
 
 ## 서드파티
 `vendor/pdf-lib.min.js` — [pdf-lib](https://github.com/Hopding/pdf-lib) (MIT, `vendor/pdf-lib.LICENSE.md`)  
+`vendor/fontkit.umd.min.js` — [@pdf-lib/fontkit](https://github.com/Hopding/fontkit) 1.1.1 (MIT, `vendor/fontkit.LICENSE`)  
 `vendor/pdfjs/` — [pdf.js](https://github.com/mozilla/pdf.js) (Apache-2.0, `vendor/pdfjs/LICENSE`)  
-`fonts/Pretendard-*.woff2` — [Pretendard](https://github.com/orioncactus/pretendard) (SIL OFL 1.1, `fonts/Pretendard-LICENSE.txt`)
+`fonts/Pretendard-*.woff2`, `fonts/Pretendard-*.ttf`(woff2를 무손실 변환, 문서 편집기의 PDF 저장용) — [Pretendard](https://github.com/orioncactus/pretendard) (SIL OFL 1.1, `fonts/Pretendard-LICENSE.txt`)
 
 `vendor/mp4-muxer.mjs` — [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) 5.1.3 (MIT, `vendor/mp4-muxer.LICENSE`)
