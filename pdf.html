@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDFTrans</title>
+<script>if (window.top !== window) document.documentElement.classList.add('embed');</script>
+<link rel="stylesheet" href="tool.css">
+</head>
+<body>
+<header>
+  <h1>PDFTrans</h1>
+  <nav class="modes" id="modes">
+    <button data-m="img" class="on">이미지 → PDF</button>
+    <button data-m="pages">PDF 페이지 관리</button>
+    <button data-m="toimg">PDF → 이미지</button>
+  </nav>
+  <div class="spacer"></div>
+  <span id="status" class="status"></span>
+</header>
+
+<main>
+  <!-- 이미지 → PDF -->
+  <section id="m-img" class="mode">
+    <aside class="side">
+      <div class="actions">
+        <label class="btn primary" for="imgFile">이미지 추가</label>
+        <input id="imgFile" type="file" accept="image/*" multiple hidden>
+        <button id="imgSort" class="btn small">이름순 정렬</button>
+        <button id="imgClear" class="btn small">모두 지우기</button>
+      </div>
+      <div id="imgList" class="items"></div>
+      <p class="hint">여기로 이미지를 끌어다 놓아도 됩니다. 위에서부터 순서대로 PDF가 됩니다.</p>
+
+      <h3>용지</h3>
+      <div class="f"><label>용지 크기</label>
+        <select id="paper"><option value="A4">A4</option><option value="A5">A5</option><option value="B5">B5</option><option value="Letter">Letter</option><option value="image">이미지 크기대로</option></select></div>
+      <div class="f"><label>방향</label>
+        <select id="orient"><option value="auto">자동 (가로로 넓은 이미지는 가로)</option><option value="portrait">세로</option><option value="landscape">가로</option></select></div>
+      <div class="f"><label>여백 (mm)</label><input id="margin" type="number" min="0" max="50" step="1" value="10"></div>
+
+      <h3>배치</h3>
+      <div class="f"><label>이미지 배치</label>
+        <select id="layout"><option value="width">가로폭에 맞춤 — 길면 여러 페이지로 분할</option><option value="fit">한 페이지에 전체가 들어가게 맞춤</option></select></div>
+      <label class="chk"><input id="smart" type="checkbox" checked> 글자/컷이 잘리지 않게 빈 줄에서 자르기</label>
+      <label class="chk"><input id="stitch" type="checkbox"> 이미지들을 이어 붙여 연속으로 분할 (웹툰 등)</label>
+      <div class="f"><label>해상도</label>
+        <select id="dpi"><option value="100">100 dpi (작게)</option><option value="150" selected>150 dpi</option><option value="200">200 dpi</option><option value="300">300 dpi (선명)</option></select></div>
+      <div class="f"><label>JPEG 품질 (분할/변환한 페이지)</label><div class="row"><input id="quality" type="range" min="60" max="100" value="90" style="flex:1"><output id="qualityOut">90</output></div></div>
+      <button id="makePdf" class="btn primary" disabled>PDF 만들기</button>
+    </aside>
+    <div class="work">
+      <div class="bar"><b id="planInfo">이미지를 추가하세요</b><span class="hint">미리보기는 실제 페이지 나눔과 같습니다</span></div>
+      <div id="preview" class="grid"><div class="empty">이미지를 끌어다 놓거나 [이미지 추가]를 누르세요<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다</small></div></div>
+    </div>
+  </section>
+
+  <!-- PDF 페이지 관리 -->
+  <section id="m-pages" class="mode" hidden>
+    <div class="work">
+      <div class="bar">
+        <label class="btn primary" for="pdfFile">PDF 추가</label>
+        <input id="pdfFile" type="file" accept="application/pdf,.pdf" multiple hidden>
+        <button id="selAll" class="btn small">모두 선택</button>
+        <button id="selNone" class="btn small">선택 해제</button>
+        <button id="rotL" class="btn small">↺ 선택 회전</button>
+        <button id="rotR" class="btn small">↻ 선택 회전</button>
+        <button id="delSel" class="btn small">선택 삭제</button>
+        <button id="clearPages" class="btn small">모두 지우기</button>
+        <b id="pagesInfo"></b>
+      </div>
+      <div class="bar">
+        <button id="saveAll" class="btn primary" disabled>전체를 PDF로 저장</button>
+        <button id="saveSel" class="btn" disabled>선택한 페이지만 저장 (추출)</button>
+        <span class="hint">나누기:</span>
+        <input id="splitN" type="number" min="1" value="1"> <span class="hint">페이지씩</span>
+        <button id="splitGo" class="btn" disabled>나눠서 저장 (zip)</button>
+      </div>
+      <div id="pageGrid" class="grid"><div class="empty">PDF를 끌어다 놓거나 [PDF 추가]를 누르세요 (여러 개를 추가하면 합쳐집니다)<br><small>카드를 끌어 순서를 바꾸고, 회전/삭제는 카드 아래 버튼이나 위쪽 선택 도구를 쓰세요</small></div></div>
+    </div>
+  </section>
+
+  <!-- PDF → 이미지 -->
+  <section id="m-toimg" class="mode" hidden>
+    <aside class="side">
+      <div class="actions">
+        <label class="btn primary" for="toimgFile">PDF 열기</label>
+        <input id="toimgFile" type="file" accept="application/pdf,.pdf" hidden>
+      </div>
+      <p id="toimgName" class="hint">PDF를 끌어다 놓아도 됩니다.</p>
+      <div class="f"><label>이미지 형식</label><select id="fmt"><option value="png">PNG (무손실)</option><option value="jpg">JPG (용량 작게)</option></select></div>
+      <div class="f"><label>해상도</label>
+        <select id="imgDpi"><option value="72">72 dpi</option><option value="100">100 dpi</option><option value="150" selected>150 dpi</option><option value="200">200 dpi</option><option value="300">300 dpi</option></select></div>
+      <label class="chk"><input id="joinTall" type="checkbox"> 선택한 페이지를 세로로 이어 붙여 긴 이미지 1장으로</label>
+      <div class="actions"><button id="selAll3" class="btn small">모두 선택</button><button id="selNone3" class="btn small">선택 해제</button></div>
+      <button id="toImgGo" class="btn primary" disabled>이미지로 저장</button>
+      <p class="hint">페이지가 여러 장이면 zip으로 묶어 저장합니다.</p>
+    </aside>
+    <div class="work">
+      <div class="bar"><b id="toimgInfo"></b></div>
+      <div id="grid3" class="grid"><div class="empty">PDF를 열면 페이지가 여기에 표시됩니다</div></div>
+    </div>
+  </section>
+</main>
+
+<script src="vendor/pdf-lib.min.js"></script>
+<script type="module" src="pdf.js"></script>
+</body>
+</html>

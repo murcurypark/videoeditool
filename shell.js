@@ -3,7 +3,7 @@
   // its state (loaded videos, edits) while another one is open. A tool is listed once its page exists: set `ready: true` then.
   const TOOLS = [
     { id: 'video', name: 'Videoeditool', src: 'video.html', ready: true },
-    { id: 'pdf', name: 'PDFTrans', src: 'pdf.html', ready: false },
+    { id: 'pdf', name: 'PDFTrans', src: 'pdf.html', ready: true },
     { id: 'doc', name: 'OfficeDocTool', src: 'doc.html', ready: false },
   ].filter((t) => t.ready);
 

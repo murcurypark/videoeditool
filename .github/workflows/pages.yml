@@ -20,10 +20,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - run: |
-          mkdir _site && cp -r index.html shell.css shell.js video.html style.css app.js vendor fonts _site/
+          mkdir _site && cp -r index.html shell.css shell.js video.html style.css app.js pdf.html pdf.js tool.css vendor fonts _site/
           v=${GITHUB_SHA::8}
           sed -i "s#shell.css#shell.css?v=$v#; s#shell.js#shell.js?v=$v#" _site/index.html
           sed -i "s#style.css#style.css?v=$v#; s#app.js#app.js?v=$v#" _site/video.html
+          sed -i "s#tool.css#tool.css?v=$v#; s#pdf.js#pdf.js?v=$v#" _site/pdf.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
