@@ -1,0 +1,39 @@
+/* OfficeDocTool layout (colors/buttons come from tool.css) */
+header .tools { display: flex; gap: 2px; flex-wrap: wrap; }
+.tools button { background: #2a2f38; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font: inherit; font-size: 15px; cursor: pointer; display: inline-flex; flex-direction: column; align-items: center; min-width: 52px; line-height: 1.2; }
+.tools button span { font-size: 10px; color: var(--mute); }
+.tools button:hover:not(:disabled) { background: #343a45; }
+.tools button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tools button.on span { color: #dbe7ff; }
+.tools button:disabled { opacity: .4; cursor: default; }
+.bar2 { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: #181b20; border-bottom: 1px solid var(--line); flex: none; flex-wrap: wrap; }
+.bar2 .sep { width: 1px; height: 18px; background: var(--line); }
+.bar2 input[type=number] { width: 56px; }
+.bar2 .hint { margin: 0 0 0 auto; }
+.docmain { flex: 1; min-height: 0; display: flex; }
+.thumbs { width: 150px; flex: none; overflow: auto; background: var(--panel); border-right: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.thumbs .th { width: 124px; cursor: pointer; border: 2px solid transparent; border-radius: 4px; padding: 2px; text-align: center; font-size: 11px; color: var(--mute); }
+.thumbs .th.on { border-color: var(--accent); color: var(--fg); }
+.thumbs .th canvas { width: 100%; background: #fff; display: block; margin-bottom: 2px; }
+.docstage { flex: 1; min-width: 0; overflow: auto; background: #0f1114; position: relative; padding: 16px; }
+.docstage .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--mute); pointer-events: none; }
+.docstage .empty[hidden] { display: none; }
+.pagewrap { position: relative; margin: 0 auto; box-shadow: 0 2px 12px #000; background: #fff; width: max-content; }
+.pagewrap[hidden] { display: none; }
+.pagewrap canvas { display: block; }
+#ovCv { position: absolute; left: 0; top: 0; touch-action: none; }
+#textEdit { position: absolute; margin: 0; padding: 0; border: 1px dashed var(--accent); background: rgba(255,255,255,.85); resize: none; overflow: hidden; outline: none; font-family: "Pretendard", sans-serif; line-height: 1.25; white-space: pre; transform-origin: center; }
+.props { width: 250px; flex: none; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 10px; font-size: 13px; }
+.props h3 { font-size: 12px; margin: 10px 0 6px; color: var(--mute); font-weight: 700; }
+.props .f { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.props .f > label { color: var(--mute); font-size: 12px; }
+.props .row { display: flex; align-items: center; gap: 8px; }
+.props .row input[type=range] { flex: 1; min-width: 0; }
+.props output { width: 34px; text-align: right; font-size: 12px; color: var(--mute); }
+.props input[type=color] { width: 36px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; }
+.props textarea { width: 100%; min-height: 70px; resize: vertical; }
+.props .actions { margin-top: 6px; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal[hidden] { display: none; }
+.modal .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; max-width: 94vw; }
+#sigCv { background: #fff; border-radius: 6px; max-width: 100%; touch-action: none; cursor: crosshair; }

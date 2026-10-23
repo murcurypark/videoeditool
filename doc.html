@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OfficeDocTool</title>
+<script>if (window.top !== window) document.documentElement.classList.add('embed');</script>
+<link rel="stylesheet" href="tool.css">
+<link rel="stylesheet" href="doc.css">
+</head>
+<body>
+<header>
+  <h1>OfficeDocTool</h1>
+  <label class="btn primary" for="docFile">PDF / AI 열기</label>
+  <input id="docFile" type="file" accept=".pdf,.ai,.indd,.idml,application/pdf,application/illustrator" hidden>
+  <input id="imgFile" type="file" accept="image/*" hidden>
+  <div class="tools" id="tools" role="toolbar" aria-label="도구">
+    <button data-t="select" class="on" title="선택 · 이동 · 크기 조절 (V)">↖<span>선택</span></button>
+    <button data-t="edit" title="PDF 안의 글자를 클릭하면 가리고 같은 자리에 수정할 글자 상자를 만듭니다">Ａ<span>글자 바꾸기</span></button>
+    <button data-t="text" title="텍스트 상자 (T)">T<span>텍스트</span></button>
+    <button data-t="rect" title="사각형">▭<span>사각형</span></button>
+    <button data-t="ellipse" title="타원">◯<span>타원</span></button>
+    <button data-t="line" title="선 (Shift: 각도 고정)">╱<span>선</span></button>
+    <button data-t="arrow" title="화살표">➚<span>화살표</span></button>
+    <button data-t="pen" title="펜으로 그리기">✎<span>펜</span></button>
+    <button data-t="highlight" title="형광펜 (반투명 사각형)">▮<span>형광펜</span></button>
+    <button data-t="cover" title="기존 내용을 색 박스로 덮습니다 (아래 원본 글자는 지워지지 않으니 기밀 가림용으로는 쓰지 마세요)">□<span>가리기</span></button>
+    <button data-t="image" title="이미지 넣기">▣<span>이미지</span></button>
+    <button data-t="sig" title="서명 그려서 넣기">✍<span>서명</span></button>
+  </div>
+  <div class="spacer"></div>
+  <span id="status" class="status"></span>
+  <button id="undo" class="btn small" disabled title="실행취소 (Ctrl+Z)">↶</button>
+  <button id="redo" class="btn small" disabled title="다시실행 (Ctrl+Shift+Z)">↷</button>
+  <button id="savePdf" class="btn primary" disabled>PDF로 저장</button>
+</header>
+<div class="bar2" id="bar2">
+  <button id="prevPage" class="btn small" disabled>◀</button>
+  <span><input id="pageNo" type="number" min="1" value="1" disabled> / <b id="pageTotal">0</b></span>
+  <button id="nextPage" class="btn small" disabled>▶</button>
+  <span class="sep"></span>
+  <button id="zoomOut" class="btn small" disabled>−</button>
+  <select id="zoomSel" disabled>
+    <option value="page">페이지 맞춤</option><option value="width">폭 맞춤</option><option value="" hidden>사용자 지정</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option>
+    <option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option>
+  </select>
+  <button id="zoomIn" class="btn small" disabled>＋</button>
+  <span class="hint" id="hintBar">PDF 또는 일러스트레이터(PDF 호환) 파일을 열거나 끌어다 놓으세요</span>
+</div>
+<main class="docmain">
+  <aside id="thumbs" class="thumbs"></aside>
+  <section id="stage" class="docstage">
+    <div id="empty" class="empty">PDF / AI 파일을 끌어다 놓거나 [PDF / AI 열기]를 누르세요<br><small>파일은 업로드되지 않고 이 브라우저 안에서만 처리됩니다<br>.indd(인디자인) 파일은 열 수 없으니 PDF로 내보내서 열어 주세요</small></div>
+    <div id="pageWrap" class="pagewrap" hidden>
+      <canvas id="pageCv"></canvas>
+      <canvas id="ovCv"></canvas>
+      <textarea id="textEdit" hidden spellcheck="false"></textarea>
+    </div>
+  </section>
+  <aside id="props" class="props"></aside>
+</main>
+
+<div id="sigModal" class="modal" hidden>
+  <div class="box">
+    <b>서명 그리기</b>
+    <canvas id="sigCv" width="520" height="200"></canvas>
+    <div class="actions"><button id="sigClear" class="btn small">지우기</button><div class="spacer"></div><button id="sigCancel" class="btn">취소</button><button id="sigOk" class="btn primary">넣기</button></div>
+  </div>
+</div>
+
+<script src="vendor/pdf-lib.min.js"></script>
+<script src="vendor/fontkit.umd.min.js"></script>
+<script type="module" src="doc.js"></script>
+</body>
+</html>
