@@ -1,8 +1,22 @@
-# 간단 영상 편집기
+# MedPark Office
 
-브라우저에서 바로 쓰는 컷 편집 툴입니다. 서버 없이 정적 파일(`index.html`, `style.css`, `app.js`)만으로 동작하며, 영상은 업로드되지 않고 브라우저 안에서만 처리됩니다.
+여러 작업 도구를 상단 탭으로 바꿔 쓰는 브라우저 앱입니다. 서버 없이 정적 파일만으로 동작하고, 파일은 업로드되지 않고 브라우저 안에서만 처리됩니다.
 
-## 기능
+| 탭 | 페이지 | 설명 |
+|---|---|---|
+| **Videoeditool** | `video.html` (`app.js`, `style.css`) | 컷 편집 영상 편집기 (아래 기능 참고) |
+| PDFTrans | `pdf.html` (예정) | PDF 변환기 |
+| OfficeDocTool | `doc.html` (예정) | PDF/일러스트레이터(PDF 호환) 문서 편집 |
+
+## 구조
+- `index.html` + `shell.js` + `shell.css`: 바깥 페이지. 상단 탭과 도구별 iframe만 있습니다. 도구는 처음 열 때 불러오고, 탭을 바꿔도 숨기기만 해서 **다른 도구를 쓰는 동안에도 상태(불러온 영상, 편집 내용)가 유지**됩니다. 키보드 단축키와 파일 드롭은 열려 있는 도구에만 적용됩니다.
+- 주소 끝에 `#video`처럼 탭 이름을 붙이면 그 탭으로 열리고, 마지막에 쓴 탭을 기억합니다.
+- 새 도구 추가: 도구 페이지(`xxx.html`)를 만들고 `shell.js`의 `TOOLS`에서 해당 도구의 `ready`를 `true`로 바꾸고, `.github/workflows/pages.yml`의 복사 목록과 캐시 방지(`?v=`) 처리에 새 파일을 추가합니다. 준비되지 않은 도구는 탭에 나타나지 않습니다.
+- 영상 편집기 페이지는 단독으로 `video.html`을 열어도 동작합니다.
+
+## Videoeditool (영상 편집기)
+
+### 기능
 - 영상 여러 개 불러오기(버튼/드래그 앤 드롭) → 각각 컷으로 나눠 한 타임라인에 이어 붙이기 (해상도가 달라도 검은 여백으로 맞춤)
 - 타임라인: 분할(S), 컷 삭제(Del), 양끝 드래그 트림, 컷 순서 변경, 확대/축소, 실행취소(Ctrl+Z)
 - **텍스트**(Pretendard 글꼴, 스타일 프리셋·외곽선·배경·그림자·정렬·회전) / **이미지** 오버레이: 미리보기에서 끌어서 이동·모서리로 크기 조절, 타임라인에서 클립 이동/길이 조절
@@ -18,13 +32,13 @@
 - 내보내기: **WebCodecs**로 프레임 단위 인코딩 후 `edited.mp4` 저장 (실시간보다 빠름, 오디오 포함)
 
 ## 사용
-`index.html`을 열거나 GitHub Pages 주소로 접속하세요. (Chrome/Edge/Firefox 최신 버전 권장)
+GitHub Pages 주소로 접속하세요 (로컬에서는 `index.html`). (Chrome/Edge/Firefox 최신 버전 권장)
 
 ## GitHub Pages 배포 (1회 설정)
 1. 저장소 **Settings → Pages → Source** 를 **GitHub Actions** 로 선택
-2. `main` 브랜치에 푸시되면 자동 배포됩니다 → `https://<계정>.github.io/videoeditool/`
+2. `main` 브랜치에 푸시되면 자동 배포됩니다(`index.html`, `shell.*`, `video.html`, `app.js`, `style.css`, `vendor`, `fonts`) → `https://<계정>.github.io/videoeditool/`
 
-## 한계
+### 한계
 - 내보내기는 30fps, 원본 해상도(짝수로 보정)로 재인코딩합니다. 영상은 H.264(미지원 시 VP9), 오디오는 AAC(미지원 시 Opus)입니다.
 - WebCodecs를 쓸 수 없는 브라우저에서는 실시간 녹화 방식(MediaRecorder)으로 자동 대체되며, 이때는 결과물 길이만큼 시간이 걸립니다.
 - 컷 전환이 있는 프로젝트의 내보내기도 WebCodecs 지원 브라우저(최신 Chrome/Edge)에서만 됩니다 (실시간 녹화 방식은 전환을 지원하지 않음).
